@@ -1,0 +1,12 @@
+﻿{
+  "name": "vibe-coding-kit",
+  "version": "1.0.0",
+  "description": "General AI engineering kit: define, plan, build, verify, review, ship, and learn across projects",
+  "skills": ["./skills/using-vibe-coding", "./skills/lay-yeu-cau", "./skills/tao-ke-hoach", "./skills/tao-prompt", "./skills/prompt-coaching", "./skills/tdd", "./skills/debugging", "./skills/frontend-react", "./skills/browser-testing", "./skills/security", "./skills/review", "./skills/ci-cd", "./skills/deployment", "./skills/observability", "./skills/rollback", "./skills/ship", "./skills/hoc-tap"],
+  "mcp": {
+    "vibe-coding": {
+      "command": "node",
+      "args": ["../mcp-server/dist/index.js"]
+    }
+  }
+}

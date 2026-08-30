@@ -1,0 +1,30 @@
+{
+  "mode": "manual",
+  "sourceGroups": [],
+  "areas": [],
+  "deleteLines": [
+    "🌹",
+    "hoa hồng"
+  ],
+  "excludeKeywords": [
+    "tìm phòng",
+    "hết phòng"
+  ],
+  "filter": {
+    "removePercentLines": false,
+    "removePriceLines": false
+  },
+  "defaultArea": null,
+  "priceRange": null,
+  "ui": {
+    "port": 3000
+  },
+  "forward": {
+    "windowMs": 3000,
+    "maxBatchItems": 10,
+    "maxWaitMs": 30000,
+    "sendDelayMs": 1500,
+    "retries": 3,
+    "historyGapMs": 10000
+  }
+}

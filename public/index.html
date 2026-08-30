@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>zaloSALE — Quản lý bot</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>zaloSALE <small>Quản lý bot chuyển tiếp phòng</small></h1>
+    <div class="hdr-right">
+      <span id="connDot" class="dot"></span><span id="connText">đang kết nối…</span>
+      <select id="modeSelect" title="Chế độ hoạt động">
+        <option value="auto">Mode: auto (treo máy)</option>
+        <option value="manual">Mode: manual (chỉ gõ lệnh)</option>
+      </select>
+    </div>
+  </header>
+
+  <nav>
+    <button class="tab active" data-tab="overview">Tổng quan</button>
+    <button class="tab" data-tab="config">Cấu hình</button>
+    <button class="tab" data-tab="areas">Khu vực</button>
+    <button class="tab" data-tab="logs">Nhật ký</button>
+  </nav>
+
+  <main>
+    <!-- ============ TỔNG QUAN ============ -->
+    <section id="tab-overview" class="tabpane active">
+      <div class="cards">
+        <div class="card"><div class="label">Mode</div><div class="value" id="stMode">—</div></div>
+        <div class="card"><div class="label">Bài đã forward</div><div class="value" id="stForwarded">—</div></div>
+        <div class="card"><div class="label">Uptime</div><div class="value" id="stUptime">—</div></div>
+        <div class="card"><div class="label">Nhóm nguồn đã học</div><div class="value" id="stSources">—</div></div>
+      </div>
+
+      <div class="panel row">
+        <h2 style="margin:0">Phiên đăng nhập</h2>
+        <button id="btnRelogin" class="ghost">🔄 Đăng nhập lại</button>
+        <button id="btnLogout" class="danger">Đăng xuất</button>
+        <button id="btnNetCheck" class="ghost">🌐 Kiểm tra mạng Zalo</button>
+        <span id="loginState" class="note"></span>
+      </div>
+      <div id="netResult" class="note"></div>
+
+      <div class="panel">
+        <h2>Chuyển tiếp lịch sử theo khoảng ngày</h2>
+        <div class="row">
+          <label>Từ ngày <input type="date" id="fwdFrom" /></label>
+          <label>Đến ngày <input type="date" id="fwdTo" /> <em>(bỏ trống = hôm nay)</em></label>
+          <button id="btnForward" class="primary">Quét &amp; Forward TẤT CẢ nhóm nguồn</button>
+        </div>
+        <div id="fwdResult" class="note"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Quét danh sách nhóm trên Zalo <button id="btnGroups" class="ghost">Tải danh sách</button></h2>
+        <p class="hint">Bot đang tham gia nhóm nào sẽ hiện ở đây (tên + ID). Dùng để tìm tên/ID nhóm nguồn không có link, hoặc tick chọn rồi bấm "Thêm vào nhóm nguồn".</p>
+        <table id="groupsTable">
+          <thead><tr><th style="width:28px"><input type="checkbox" id="chkAllPage" title="Chọn cả trang" /></th><th>#</th><th>Tên nhóm</th><th>ID</th><th>Thao tác</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div class="row pager">
+          <button id="btnPrevPage" class="ghost" disabled>‹ Trước</button>
+          <span id="pageInfo">—</span>
+          <button id="btnNextPage" class="ghost" disabled>Sau ›</button>
+          <button id="btnAddSrc" class="primary" disabled>➕ Thêm vào nhóm nguồn (0)</button>
+        </div>
+        <div id="groupsNote" class="note"></div>
+      </div>
+    </section>
+
+    <!-- ============ CẤU HÌNH ============ -->
+    <section id="tab-config" class="tabpane">
+      <div class="panel">
+        <h2>Cấu hình chung</h2>
+        <div class="grid2">
+          <label>Nhóm nguồn (1 dòng / nhóm: link zalo.me/g/... HOẶC tên nhóm, không cần cả 2)
+            <textarea id="cfgSources" rows="4" spellcheck="false"></textarea>
+          </label>
+          <label>deleteLines — xoá NGUYÊN DÒNG chứa chữ (1 chữ / dòng, vd: 🌹)
+            <textarea id="cfgDeleteLines" rows="4" spellcheck="false"></textarea>
+          </label>
+          <label>excludeKeywords — bài chứa từ này sẽ KHÔNG chuyển tiếp (1 từ / dòng)
+            <textarea id="cfgExclude" rows="4" spellcheck="false"></textarea>
+          </label>
+          <label>defaultArea — khu vực dự phòng khi không nhận định được (để trống = bỏ qua)
+            <input type="text" id="cfgDefaultArea" spellcheck="false" />
+          </label>
+        </div>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="cfgFltPercent" /> Xoá mọi dòng chứa % hoa hồng (vd "30%")</label>
+          <label class="chk"><input type="checkbox" id="cfgFltPrice" /> Xoá dòng chứa "giá"</label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Forward — thời gian &amp; chống ban</h2>
+        <div class="grid3">
+          <label>Gom cửa sổ (ms) <input type="number" id="cfgWinMs" min="500" step="100" /></label>
+          <label>Tối đa tin / bài <input type="number" id="cfgMaxItems" min="1" /></label>
+          <label>Chờ tối đa 1 bài (ms) <input type="number" id="cfgMaxWait" min="1000" /></label>
+          <label>Delay giữa các lần gửi (ms) <input type="number" id="cfgSendDelay" min="0" /></label>
+          <label>Số lần thử lại <input type="number" id="cfgRetries" min="0" max="5" /></label>
+          <label>Gap lịch sử (ms) <input type="number" id="cfgHistGap" min="1000" /></label>
+        </div>
+      </div>
+
+      <button id="btnSaveCfg" class="primary">💾 Lưu cấu hình</button>
+      <div id="cfgResult" class="note"></div>
+    </section>
+
+    <!-- ============ KHU VỰC ============ -->
+    <section id="tab-areas" class="tabpane">
+      <div class="panel">
+        <h2>Khu vực → nhóm đích <button id="btnResolveAreas" class="ghost">🔎 Kiểm tra link → tên nhóm</button></h2>
+        <p class="hint">Mỗi dòng = 1 khu vực: từ khoá nhận định + link nhóm đích (zalo.me/g/...). Bấm nút trên để bot giải mã link và hiện tên nhóm thật + ID.</p>
+        <div id="areaRows"></div>
+        <button id="btnAddArea" class="ghost">+ Thêm khu vực</button>
+        <br /><br />
+        <button id="btnSaveAreas" class="primary">💾 Lưu khu vực</button>
+        <div id="areaResult" class="note"></div>
+      </div>
+    </section>
+
+    <!-- ============ NHẬT KÝ ============ -->
+    <section id="tab-logs" class="tabpane">
+      <div class="panel">
+        <h2>Nhật ký <button id="btnClearLogs" class="ghost">Xoá màn hình</button></h2>
+        <pre id="logBox" class="log"></pre>
+      </div>
+    </section>
+  </main>
+
+  <!-- QR overlay -->
+  <div id="qrOverlay" class="overlay hidden">
+    <div class="qrbox">
+      <h2>Quét QR bằng Zalo để đăng nhập</h2>
+      <img id="qrImg" alt="QR đăng nhập" />
+      <p id="qrStatus" class="note">Mở Zalo → Biểu tượng quét mã → quét ảnh này</p>
+      <p class="note">Hoặc mở file: <code>config/session/qr-login.png</code></p>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

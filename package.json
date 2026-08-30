@@ -1,0 +1,35 @@
+{
+  "name": "zalosale",
+  "version": "0.1.0",
+  "description": "Bot Zalo: chuyển tiếp tin đăng phòng từ nhóm nguồn sang nhóm đích theo khu vực, xoá dòng chứa chữ cấu hình",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node scripts/tests.mjs",
+    "build": "npm --prefix web run build",
+    "dev": "npm --prefix web run dev",
+    "postinstall": "node scripts/patch-zca.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "qrcode-terminal": "^0.12.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zca-js": "^2.1.2",
+    "zod": "^4.4.3"
+  },
+  "private": true,
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.1.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  }
+}

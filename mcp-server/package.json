@@ -1,0 +1,24 @@
+{
+  "name": "vibe-coding-mcp",
+  "version": "0.1.0",
+  "description": "MCP server cho Vibe Coding Kit — 1 server cho Codex/Antigravity/OpenCode/Cursor/Windsurf/Claude",
+  "type": "module",
+  "bin": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "mcp:build": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  },
+  "keywords": ["mcp", "vibe-coding", "opencode", "codex", "antigravity"],
+  "license": "MIT"
+}

@@ -1,0 +1,14 @@
+---
+description: Vibe Coding Kit — rules cho Cursor (mirror AGENTS.md)
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# Vibe Coding Kit — Cursor Rule
+
+**Stack:** Xem `docs/_meta/PROJECT_CONTEXT.md` + `docs/01_TECH_STACK.md`
+**Workflow 5 pha:** `docs/00_WORKFLOW.md` — 1 TASK = 1 slice (DB+API+test, chưa UI) = 1 PR, UI ở Pha 5
+**Context Loading:** <2000 dòng — đọc `PROJECT_CONTEXT.md` + `SPEC-xxx.md` + file sẽ sửa + 1 pattern; thiếu spec → hỏi, không bịa
+**Conventions:** Header 3 Biết bắt buộc (`docs/14_CODE_READING_GUIDE.md:2`), file ≤300 dòng/hàm ≤50, `zod` ở boundary, test colocated (`*.test.ts`), commit `AI PROMPT-xxx`/`human @ten`
+**Boundaries:** không đổi DB schema khi chưa review, không `npm install` khi chưa `npm audit`, không làm UI khi logic chưa xanh, KHÔNG tự tiện lấy GitHub/API/thông tin cá nhân — phải hỏi consent trước (docs/18_PRIVACY_CONSENT.md:1)
+**Skills:** `.opencode/skills/mattpocock-requirements` (BIZ→SPEC) → `.opencode/skills/prompt-master` (SPEC→PROMPT 6 khối)

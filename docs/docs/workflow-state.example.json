@@ -1,0 +1,13 @@
+{
+  "task": "TASK-001",
+  "state": "DRAFT",
+  "active_slice": "replace-with-one-behavior",
+  "user_approval": "pending",
+  "tests": "pending",
+  "build": "pending",
+  "typecheck": "pending",
+  "security": "pending",
+  "review": "pending",
+  "learning": "pending",
+  "next_decision": "replace-with-the-user-decision"
+}

@@ -1,0 +1,121 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "hhtech/deepseek-v4-pro",
+  "provider": {
+    "orcarouter": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OrcaRouter",
+      "options": {
+        "baseURL": "https://api.orcarouter.ai/v1",
+        "apiKey": "{env:ORCAROUTER_API_KEY}"
+      },
+      "models": {
+        "orcarouter/auto": { "name": "OrcaRouter Auto" }
+      }
+    },
+    "hhtech": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "HHTECH API",
+      "options": {
+        "baseURL": "https://hhtechapi.net/v1",
+        "apiKey": "{env:HHTECH_API_KEY}"
+      },
+      "models": {
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro"
+        },
+        "deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash"
+        },
+        "claude-hhtech-free": {
+          "name": "Claude HHTech Free"
+        },
+        "claude-sonnet-5": {
+          "name": "Claude Sonnet 5"
+        },
+        "claude-sonnet-4.6": {
+          "name": "Claude Sonnet 4.6"
+        },
+        "claude-opus-5": {
+          "name": "Claude Opus 5"
+        },
+        "claude-opus-4-8": {
+          "name": "Claude Opus 4.8"
+        },
+        "claude-opus-4-7": {
+          "name": "Claude Opus 4.7"
+        },
+        "claude-opus-4-6": {
+          "name": "Claude Opus 4.6"
+        },
+        "claude-haiku-4.5": {
+          "name": "Claude Haiku 4.5"
+        },
+        "gpt-5.6-sol": {
+          "name": "GPT 5.6 Sol"
+        },
+        "gpt-5.6-terra": {
+          "name": "GPT 5.6 Terra"
+        },
+        "gpt-5.6-luna": {
+          "name": "GPT 5.6 Luna"
+        },
+        "gpt-5.5": {
+          "name": "GPT 5.5"
+        },
+        "gpt-5.4": {
+          "name": "GPT 5.4"
+        },
+        "grok-4.5": {
+          "name": "Grok 4.5"
+        },
+        "grok-4.6": {
+          "name": "Grok 4.6"
+        },
+        "kimi-k3": {
+          "name": "Kimi K3"
+        },
+        "qwen3-coder-plus": {
+          "name": "Qwen3 Coder Plus"
+        },
+        "glm-5.2": {
+          "name": "GLM 5.2"
+        },
+        "claude-sonnet-3.7": {
+          "name": "Claude Sonnet 3.7"
+        },
+        "deepseek-v4": {
+          "name": "DeepSeek V4"
+        },
+        "dsv4": {
+          "name": "DSV4"
+        },
+        "claude-4.5": {
+          "name": "Claude 4.5"
+        },
+        "claude-4.6": {
+          "name": "Claude 4.6"
+        }
+      }
+    }
+  },
+  "skills": {
+    "paths": ["./.opencode/skills"]
+  },
+  "mcp": {
+    "vibe-coding": {
+      "type": "local",
+      "command": ["node", "./mcp-server/dist/index.js"],
+      "enabled": true
+    }
+  },
+  "commands": {
+    "dev": "npm run dev",
+    "test": "npm test",
+    "build": "npm run build",
+    "lint": "npm run lint --fix",
+    "typecheck": "npx tsc --noEmit",
+    "security:audit": "powershell -ExecutionPolicy Bypass -File scripts/security-audit.ps1"
+  }
+}
+

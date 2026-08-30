@@ -1,0 +1,9 @@
+# Windsurf Rules — Vibe Coding Kit (mirror AGENTS.md)
+# Windsurf đọc file này. Đồng bộ với AGENTS.md.
+
+Stack: docs/_meta/PROJECT_CONTEXT.md + docs/01_TECH_STACK.md (TS+React+Fastify+Postgres+Dart)
+Workflow: docs/00_WORKFLOW.md — 5 pha, 1 TASK=1 slice=1 PR, logic trước UI
+Context: <2000 dòng — đọc PROJECT_CONTEXT + SPEC-xxx + file sẽ sửa + 1 pattern, thiếu spec thì hỏi
+Conventions: header 3 Biết (docs/14_CODE_READING_GUIDE.md:2), file ≤300, hàm ≤50, zod ở boundary, test colocated, commit AI/human rõ
+Boundaries: không đổi schema khi chưa review, không thêm dep khi chưa audit, không gộp refactor+feature, KHÔNG tự tiện lấy GitHub/API/thông tin cá nhân — phải hỏi consent trước (docs/18_PRIVACY_CONSENT.md:1)
+Skills: .opencode/skills/mattpocock-requirements, .opencode/skills/prompt-master

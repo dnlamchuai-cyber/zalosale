@@ -1,0 +1,8 @@
+# <type>(scope): AI PROMPT-xxx | human @ten — mo ta 1 cau
+# type: feat | fix | refactor | docs | chore
+# Vi du:
+# feat(links): AI PROMPT-001 — POST /api/links tao slug (TASK-002)
+# fix(links): human @tu — retry slug 3 lan (REVIEW-001:2)
+#
+# Body (optional): giai thich tai sao, link SPEC/REVIEW
+# Footer: BOARD, Worklog, Tag neu co

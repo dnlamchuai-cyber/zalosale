@@ -1,0 +1,42 @@
+# Deps
+node_modules/
+.pnp
+.pnp.js
+
+# Build
+dist/
+build/
+.next/
+out/
+coverage/
+
+# Env — KHONG commit secret (xem 12_HANDOVER_CHECKLIST S3)
+.env
+.env.local
+.env.*.local
+
+# Zalo runtime data — session credentials, group metadata, and message history
+config/config.json
+config/groups-cache.json
+config/session/
+data/
+logs/
+
+# Local agent/runtime scratch data
+.temp/
+
+# DB
+prisma/migrations/.tmp/
+prisma/dev.db
+prisma/dev.db-journal
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+npm-debug.log*
+
+# Vibe kit temp
+C:\Users\Admin\AppData\Local\Temp\opencode/
