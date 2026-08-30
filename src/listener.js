@@ -373,7 +373,7 @@ export function startBot({ api, config, batcher, forwarder, status }) {
     }
   }
 
-  async function scanRange(nameArg, range) {
+  async function scanRange(nameArg, range, keywordArg = "") {
     const { fetchRecentBatches } = await import("./history.js");
     const ids = await ensureSourceIds(nameArg);
     if (!ids.length) {
@@ -383,6 +383,7 @@ export function startBot({ api, config, batcher, forwarder, status }) {
     const posts = [];
     const raw = new Map();
     let groups = 0;
+    const keyword = normalizeText(String(keywordArg).trim());
     for (const id of ids) {
       const name = knownSources.get(id) || id;
       let batches = [];
@@ -395,6 +396,10 @@ export function startBot({ api, config, batcher, forwarder, status }) {
       groups++;
       let idx = 0;
       for (const items of batches) {
+        const sourceText = items
+          .map((item) => (typeof item.data?.content === "string" ? item.data.content : ""))
+          .join("\n\n");
+        if (keyword && !normalizeText(sourceText).includes(keyword)) continue;
         const d = forwarder.describePost(items);
         if (d.excluded) continue;
         if (!d.clean && !d.photoCount) continue;

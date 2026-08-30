@@ -106,7 +106,7 @@ export class ApiServer {
     // ---- Control ----
     this.app.post("/api/control", async (req, res) => {
       const body = req.body || {};
-      const { action, mode, threadId, days, from, to, name } = body;
+      const { action, mode, threadId, days, from, to, name, keyword } = body;
       const { status, bot } = ctx();
       try {
         switch (action) {
@@ -134,10 +134,12 @@ export class ApiServer {
           }
           case "scan": {
             if (!bot) return res.status(409).json({ ok: false, error: "Bot chưa sẵn sàng" });
+            if (keyword != null && typeof keyword !== "string") return res.status(400).json({ ok: false, error: "Từ khóa phải là chuỗi" });
+            if (typeof keyword === "string" && keyword.trim().length > 50) return res.status(400).json({ ok: false, error: "Từ khóa tối đa 50 ký tự" });
             const { resolveRange } = await import("./history.js");
             const range = resolveRange({ days, from, to });
             if (range.error) return res.status(400).json({ ok: false, error: range.error });
-            const r = await bot.scanRange(name || "", range);
+            const r = await bot.scanRange(name || "", range, keyword?.trim() || "");
             if (r.error) return res.status(400).json({ ok: false, error: r.error });
             return res.json({ ok: true, scanId: r.scanId, range: r.range, groups: r.groups, total: r.total, posts: r.posts });
           }

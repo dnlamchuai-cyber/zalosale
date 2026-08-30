@@ -1,3 +1,7 @@
+// Ai viết: Codex — sắp xếp luồng cấu hình trước khi quét
+// Tại sao: người dùng chọn nhóm nguồn trước rồi mới quét tin từ các nhóm đó
+// Link: PLAN.md — yêu cầu UI ngày 2026-08-30
+
 import { useCallback, useEffect, useState } from "react";
 import type { AppConfig, StatusData } from "./types";
 import { api } from "./api";
@@ -6,7 +10,7 @@ import { SourceGroupsPanel, AreasPanel } from "./components/ConfigPanels";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { LogsPanel, QrOverlay, SessionPanel } from "./components/LogsSession";
 import { ScanReviewPanel } from "./components/ScanReview";
-import { CommunityCheckPanel } from "./components/CommunityCheckPanel";
+import { AutoModeButton } from "./components/AutoModeButton";
 
 export default function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -151,19 +155,15 @@ export default function App() {
         <div className="topbar-right">
           <span className={`dot ${conn === "on" ? "online" : "offline"}`} />
           <span className="conn-text">{conn === "on" ? (loggedIn ? "bot đã đăng nhập" : "chưa đăng nhập") : "mất kết nối"}</span>
-          <button
-            className={config.mode === "auto" ? "primary" : ""}
-            style={{ minWidth: 150 }}
-            onClick={async () => {
-              const next = config.mode === "auto" ? "manual" : "auto";
+          <AutoModeButton
+            mode={config.mode}
+            hasDestinations={config.areas.some((area) => Boolean(area.groupLink.trim()))}
+            onChange={async (next) => {
               await api.control({ action: "mode", mode: next });
               setConfig((c) => (c ? { ...c, mode: next } : c));
               refreshStatus();
             }}
-            title="Bật = bot tự chuyển tiếp tin mới khi treo máy. Tắt = chỉ gửi tin bạn tự chọn trên giao diện."
-          >
-            {config.mode === "auto" ? "⏺ Treo máy: AUTO" : "▶ Tự động: tắt (manual)"}
-          </button>
+          />
         </div>
       </header>
 
@@ -197,11 +197,10 @@ export default function App() {
 
         {loggedIn && (
           <>
+            <SourceGroupsPanel config={config} onSave={saveConfig} />
+
             <ScanReviewPanel defaultDays={3} />
 
-            <CommunityCheckPanel />
-
-            <SourceGroupsPanel config={config} onSave={saveConfig} />
             <AreasPanel config={config} onSave={saveConfig} />
 
             <div className="panel" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>

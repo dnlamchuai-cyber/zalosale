@@ -12,7 +12,7 @@ export function CommunityCheckPanel() {
   const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [page, setPage] = useState(0);
-  const [from, setFrom] = useState(() => toISO(3));
+  const [from, setFrom] = useState(() => toISO(0));
   const [to, setTo] = useState(() => toISO(0));
   const [keyword, setKeyword] = useState("");
   const [result, setResult] = useState<{ total: number; posts: any[]; range: string } | null>(null);
@@ -27,10 +27,17 @@ export function CommunityCheckPanel() {
   const slice = groups.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
 
   async function onCheck() {
-    if (!selectedId) return setMsg({ t: "Chọn 1 nhóm Community trước", k: "err" });
-    if (!from || !to) return setMsg({ t: "Chọn Từ ngày và Đến ngày", k: "err" });
+    if (!selectedId) {
+      setResult(null);
+      return setMsg({ t: "Chọn 1 nhóm Community trước", k: "err" });
+    }
+    if (!from || !to) {
+      setResult(null);
+      return setMsg({ t: "Chọn Từ ngày và Đến ngày", k: "err" });
+    }
     setLoading(true);
     setMsg(null);
+    setResult(null);
     try {
       const res = await fetch("/api/community/check", {
         method: "POST",
@@ -50,8 +57,8 @@ export function CommunityCheckPanel() {
 
   return (
     <div className="panel">
-      <h2>Check tin nhắn Community (3 ngày)</h2>
-      <p className="hint">Chọn 1 nhóm Community (thumbnail) + chọn ngày → Quét. Chỉ quét 3 ngày mặc định, max 60.</p>
+      <h2>Check tin nhắn Community</h2>
+      <p className="hint">Chọn 1 nhóm Community (thumbnail) + chọn ngày → Quét. Mặc định quét hôm nay, tối đa 60 ngày.</p>
 
       <div className="thumb-grid">
         {slice.map((g) => (
@@ -63,7 +70,14 @@ export function CommunityCheckPanel() {
           >
             <img className="thumb-avatar" src={(g as any).avt || (g as any).avatar || ""} alt={g.name} style={{ width: 56, height: 56 }} onError={(e) => ((e.target as HTMLImageElement).style.display = "none")} />
             <div className="thumb-name">{g.name}</div>
-            <input type="radio" checked={selectedId === g.id} onChange={() => setSelectedId(g.id)} style={{ marginTop: 6 }} />
+            <input
+              type="radio"
+              name="community-group"
+              aria-label={`Chọn ${g.name}`}
+              checked={selectedId === g.id}
+              onChange={() => setSelectedId(g.id)}
+              style={{ marginTop: 6 }}
+            />
           </div>
         ))}
       </div>
@@ -99,5 +113,7 @@ export function CommunityCheckPanel() {
 function toISO(daysAgo: number) {
   const d = new Date();
   d.setDate(d.getDate() - daysAgo);
-  return d.toISOString().slice(0, 10);
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${month}-${day}`;
 }

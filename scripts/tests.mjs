@@ -1,6 +1,7 @@
 import { cleanText, isExcluded, normalizeText } from "../src/processor.js";
 import { classifyArea } from "../src/classifier.js";
-import { parseDateInput, resolveRange, startOfDay, endOfDay, fmtDate, fetchRecentBatches } from "../src/history.js";
+import { parseDateInput, resolveRange, startOfDay, endOfDay, fmtDate, fetchRecentBatches, fetchRecentMessages } from "../src/history.js";
+import { createCommunityParams, createCommunityRequest } from "../src/community.js";
 import { Forwarder } from "../src/forwarder.js";
 import { startBot } from "../src/listener.js";
 
@@ -172,6 +173,31 @@ assertEq("khoảng hẹp chỉ 1 tin", batches3.length, 1);
 const batches4 = await fetchRecentBatches(api, "g001", { fromMs: now - 86400000, toMs: now + 1000 }, { ...CFG, forward: { ...CFG.forward, maxBatchItems: 2 } });
 assertEq("maxBatchItems=2 → 3 bài", batches4.length, 3);
 
+console.log("\n=== community: request + fallback ===");
+const communityRequest = createCommunityRequest("encrypted-params");
+assertEq("Community dùng GET", communityRequest.options.method, "GET");
+assertEq("Community gửi params trên query", communityRequest.query.params, "encrypted-params");
+assertEq("Community tắt retry tự động", communityRequest.query.nretry, 0);
+const communityParams = createCommunityParams("g123", 120, 456, "test-imei");
+assertEq("Community bỏ prefix g", communityParams.groupId, "123");
+assertEq("Community phân trang tối đa 50 tin", communityParams.count, 50);
+assertEq("Community gửi cursor", communityParams.globalMsgId, 456);
+assertEq("Community gửi src web", communityParams.src, 3);
+assertEq("Community gửi imei", communityParams.imei, "test-imei");
+
+const localBatch = [[{ data: { ts: now, content: "Tin Community local" } }]];
+const fallbackBatches = await fetchRecentMessages(
+  { getGroupChatHistory: async () => { throw new Error("HTTP 404"); } },
+  "community-001",
+  {
+    fromMs: now - 86400000,
+    toMs: now + 1000,
+    communityFetch: async () => { throw new Error("Invalid context response"); },
+    storeQuery: () => localBatch,
+  }
+);
+assertEq("Community lỗi bất kỳ → fallback store", fallbackBatches.length, 1);
+
 /* ---------------- 4. forwarder.js: describePost ---------------- */
 console.log("\n=== forwarder: describePost ===");
 const fw = new Forwarder(makeApi(), CFG, () => {});
@@ -237,6 +263,11 @@ assertEq("index rỗng → sent 0", f5.sent, 0);
 // scan với lọc tên nhóm
 const scanR2 = await bot.scanRange("nhom link", { fromMs: nowT - 86400000, toMs: nowT + 1000 });
 assertEq("scan lọc tên nhóm trả bài", scanR2.posts?.length > 0, true);
+
+// quét chung lọc từ khóa giống logic Community cũ: không phân biệt dấu/hoa thường
+const scanByKeyword = await bot.scanRange("", { fromMs: nowT - 86400000, toMs: nowT + 1000 }, "HA DONG");
+assertEq("scan lọc từ khóa không dấu", scanByKeyword.posts.length, 1);
+assertEq("scan lọc từ khóa đúng bài Hà Đông", scanByKeyword.posts[0]?.areaName, "ha dong");
 
 /* ---------------- 6. scan chọn sai vùng ảnh hưởng không? ---------------- */
 console.log("\n=== listener: kiểm tra scan không gửi gì (preview thuần) ===");

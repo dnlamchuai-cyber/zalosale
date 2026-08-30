@@ -85,7 +85,15 @@ export function fmtDate(ms) {
 export async function fetchRecentMessages(
   api,
   threadId,
-  { fromMs, toMs = Date.now(), gapMs = 10000, maxBatchItems = 10, count = 1500 } = {}
+  {
+    fromMs,
+    toMs = Date.now(),
+    gapMs = 10000,
+    maxBatchItems = 10,
+    count = 1500,
+    communityFetch,
+    storeQuery,
+  } = {}
 ) {
   if (!isFinite(fromMs)) throw new Error("Thiếu fromMs (mốc thời gian bắt đầu)");
 
@@ -99,25 +107,25 @@ export async function fetchRecentMessages(
     if (isNotFound) {
       logger.warn(`getGroupChatHistory 404 cho ${threadId} — thử Community (cm/getrecentv2)`);
       try {
-        const { getCommunityHistoryFactory } = await import("./community.js");
-        const ctx = api.listener?.ctx || api._ctx || api.ctx;
-        if (!ctx) throw new Error("No ctx for community history");
-        const getCommunityHistory = getCommunityHistoryFactory(ctx, api);
+        let getCommunityHistory = communityFetch;
+        if (!getCommunityHistory) {
+          const { getCommunityHistoryFactory } = await import("./community.js");
+          const ctx = api.listener?.ctx || api._ctx || api.ctx;
+          if (!ctx) throw new Error("No ctx for community history");
+          getCommunityHistory = getCommunityHistoryFactory(ctx, api);
+        }
         res = await getCommunityHistory(threadId, count);
         logger.info(`Community history OK cho ${threadId}`);
       } catch (e2) {
-        const msg2 = String(e2?.message || "") + " " + String(e2?.code || "");
-        const isFallback = msg2.includes("404") || msg2.includes("fetch failed") || msg.includes("fetch failed") || msg.includes("ENOTFOUND") || msg.includes("Failed");
-        if (isFallback) {
-          logger.warn(`Community history cũng lỗi (${e2.message}) — thử đọc từ store local`);
-          try {
-            const { query } = await import("./store.js");
-            const batches = query({ fromMs, toMs, sourceIds: [String(threadId)] });
-            logger.info(`Đọc từ store: ${batches.length} bài trong khoảng (fallback)`);
-            return batches;
-          } catch (e3) {
-            logger.warn(`Đọc store cũng lỗi: ${e3.message}`);
-          }
+        logger.warn(`Community history cũng lỗi (${e2.message}) — thử đọc từ store local`);
+        try {
+          let query = storeQuery;
+          if (!query) ({ query } = await import("./store.js"));
+          const batches = query({ fromMs, toMs, sourceIds: [String(threadId)] });
+          logger.info(`Đọc từ store: ${batches.length} bài trong khoảng (fallback)`);
+          return batches;
+        } catch (e3) {
+          logger.warn(`Đọc store cũng lỗi: ${e3.message}`);
         }
         throw e2;
       }
@@ -144,10 +152,10 @@ export async function fetchRecentMessages(
     const t = tsOf(m);
     return t && t >= fromMs && t <= toMs;
   });
-  const reachedEnd = items.length < count;
+  const reachedEnd = res?.hasMore === false || items.length < count;
   logger.info(
     `Quét lịch sử: nhận ${items.length} tin, trong khoảng ${inRange.length} tin` +
-      (reachedEnd ? "" : " (⚠️ hết giới hạn 1500 tin, có thể thiếu tin cũ)")
+      (reachedEnd ? "" : ` (⚠️ hết giới hạn ${count} tin, có thể thiếu tin cũ)`)
   );
   return groupIntoBatches(inRange.reverse(), gapMs, maxBatchItems);
 }

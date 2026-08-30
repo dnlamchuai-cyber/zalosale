@@ -1,3 +1,7 @@
+// Ai viết: Codex — đơn giản hóa luồng quét nhóm nguồn
+// Tại sao: màn quét dùng trực tiếp sourceGroups đã cấu hình, tránh hai nơi chọn nguồn khác nhau
+// Link: PLAN.md — yêu cầu UI ngày 2026-08-30
+
 import { useState } from "react";
 import type { ScanPost } from "../types";
 import { api } from "../api";
@@ -31,14 +35,13 @@ export function ScanReviewPanel({ defaultDays }: { defaultDays: number }) {
   const [from, setFrom] = useState(toLocal(defaultFrom));
   const [to, setTo] = useState(toLocal(today));
   const [quick, setQuick] = useState(0); // 0 = tự chọn, 1/3/7 = ngày
-  const [groupFilter, setGroupFilter] = useState("");
+  const [keyword, setKeyword] = useState("");
   const [posts, setPosts] = useState<ScanPost[]>([]);
   const [scanId, setScanId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ t: string; k: "ok" | "err" } | null>(null);
   const [range, setRange] = useState("");
-  const [destFilter, setDestFilter] = useState("");
 
   const pickQuick = (n: number) => {
     setQuick(n);
@@ -53,7 +56,8 @@ export function ScanReviewPanel({ defaultDays }: { defaultDays: number }) {
     setBusy(true);
     setMsg(null);
     try {
-      const body: Record<string, unknown> = { name: groupFilter.trim() || undefined };
+      const body: Record<string, unknown> = {};
+      if (keyword.trim()) body.keyword = keyword.trim();
       if (quick) body.days = quick;
       else {
         if (!from || !to) throw new Error("Chọn khoảng ngày (Từ ngày → Đến ngày)");
@@ -98,14 +102,8 @@ export function ScanReviewPanel({ defaultDays }: { defaultDays: number }) {
     if (!scanId || !posts.length) return;
     setBusy(true);
     try {
-      if (destFilter && filtered.length !== posts.length) {
-        const idxs = filtered.map((p) => posts.indexOf(p));
-        const r = (await api.control({ action: "forwardSel", scanId, indexes: idxs })) as { ok: true; sent: number };
-        setMsg({ t: `✓ Đã đưa ${r.sent} bài (đã lọc) vào hàng đợi — xem Nhật ký`, k: "ok" });
-      } else {
-        const r = (await api.control({ action: "forwardAll", scanId })) as { ok: true; sent: number };
-        setMsg({ t: `✓ Đã đưa cả ${r.sent} bài vào hàng đợi gửi — xem Nhật ký`, k: "ok" });
-      }
+      const r = (await api.control({ action: "forwardAll", scanId })) as { ok: true; sent: number };
+      setMsg({ t: `✓ Đã đưa cả ${r.sent} bài vào hàng đợi gửi — xem Nhật ký`, k: "ok" });
       setSelected(new Set());
     } catch (e) {
       setMsg({ t: (e as Error).message, k: "err" });
@@ -114,13 +112,7 @@ export function ScanReviewPanel({ defaultDays }: { defaultDays: number }) {
     }
   };
 
-  const filtered = destFilter
-    ? posts.filter((p) => {
-        const hay = nameKey(`${p.areaName || ""} ${p.kw} ${p.clean}`);
-        return hay.includes(nameKey(destFilter));
-      })
-    : posts;
-  const allChecked = filtered.length > 0 && filtered.every((_, i) => selected.has(posts.indexOf(filtered[i])));
+  const allChecked = posts.length > 0 && posts.every((_, i) => selected.has(i));
 
   return (
     <div className="panel">
@@ -151,8 +143,8 @@ export function ScanReviewPanel({ defaultDays }: { defaultDays: number }) {
           <input type="date" value={to} onChange={(e) => { setTo(e.target.value); setQuick(0); }} />
         </label>
         <label className="field">
-          Lọc theo nhóm nguồn (tuỳ chọn)
-          <input type="text" value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)} placeholder="vd: cau giay — bỏ trống = tất cả" />
+          Từ khóa
+          <input type="text" value={keyword} maxLength={50} onChange={(e) => setKeyword(e.target.value)} placeholder="vd: hà đông — bỏ trống = tất cả" />
         </label>
         <button className="primary" onClick={scan} disabled={busy}>
           {busy ? "Đang quét..." : "🔍 Quét tin"}
@@ -163,20 +155,12 @@ export function ScanReviewPanel({ defaultDays }: { defaultDays: number }) {
       {posts.length > 0 && (
         <>
           <div className="divider" />
-          <div className="row">
-            <input type="text" value={destFilter} onChange={(e) => setDestFilter(e.target.value)} placeholder="Lọc tin nhắn chứa chữ (vd: cau giay, ha dong) — để trống = tất cả" style={{ flex: 1 }} />
-            {destFilter && (
-              <span className="hint" style={{ margin: 0 }}>
-                Đang lọc: {filtered.length}/{posts.length} bài chứa "{destFilter}"
-              </span>
-            )}
-          </div>
           <div className="row" style={{ marginTop: 8 }}>
             <button className="mini" onClick={sendSelected} disabled={busy || !selected.size}>
               📤 Gửi tin đã chọn ({selected.size})
             </button>
             <button className="mini primary" onClick={sendAll} disabled={busy}>
-              📤 {destFilter && filtered.length !== posts.length ? `Gửi ${filtered.length} bài đã lọc` : `Gửi tất cả (${posts.length})`}
+              📤 Gửi tất cả ({posts.length})
             </button>
             <span className="hint" style={{ margin: 0 }}>
               Tổng {posts.length} bài — {range}
@@ -192,7 +176,7 @@ export function ScanReviewPanel({ defaultDays }: { defaultDays: number }) {
                     onChange={(e) => {
                       if (e.target.checked) setSelected(new Set(filtered.map((p) => posts.indexOf(p))));
                       else {
-                        const toRemove = new Set(filtered.map((p) => posts.indexOf(p)));
+                  const toRemove = new Set(posts.map((_, i) => i));
                         setSelected((prev) => new Set([...prev].filter((x) => !toRemove.has(x))));
                       }
                     }}
@@ -207,7 +191,7 @@ export function ScanReviewPanel({ defaultDays }: { defaultDays: number }) {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((p) => {
+              {posts.map((p) => {
                 const i = posts.indexOf(p);
                 return (
                   <tr key={p.id}>
