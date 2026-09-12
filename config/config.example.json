@@ -23,8 +23,10 @@
     "windowMs": 3000,
     "maxBatchItems": 10,
     "maxWaitMs": 120000,
-    "sendDelayMs": 1500,
-    "retries": 3,
-    "historyGapMs": 120000
+    "sendDelayMs": 500,
+    "retries": 1,
+    "historyGapMs": 120000,
+    "imageMaxDim": 1600,
+    "imageQuality": 80
   }
 }

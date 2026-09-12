@@ -21,6 +21,8 @@ const DEFAULT_FORWARD = {
   sendDelayMs: 500,
   retries: 1,
   historyGapMs: 120000,
+  imageMaxDim: 1600,
+  imageQuality: 80,
 };
 const CONTACT_FIELD_LIMIT = 2000;
 const CONTACT_FIELDS = ["admins", "deputies", "supportGroup", "note"];

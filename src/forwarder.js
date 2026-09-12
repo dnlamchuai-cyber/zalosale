@@ -2,6 +2,7 @@
 // SPEC: docs/03_SPEC/SPEC-003.md
 import fs from "fs";
 import path from "path";
+import sharp from "sharp";
 import { ThreadType } from "zca-js";
 import { logger } from "./logger.js";
 import { TEMP_DIR } from "./config.js";
@@ -445,10 +446,47 @@ export class Forwarder {
       const ext = mediaType === "video" ? videoExtension : imageExtension;
       const file = path.join(TEMP_DIR, `photo-${Date.now()}-${this.imgIndex++}.${ext}`);
       fs.writeFileSync(file, buf);
+      if (mediaType !== "video") await this.shrinkImage(file, ext);
       return file;
     } catch (e) {
       logger.warn(`Tải media thất bại: ${url.slice(0, 80)}... (${e.message})`);
       return null;
+    }
+  }
+
+  /**
+   * WHY: ảnh gốc 1–3MB làm hàng đợi 900 cụm tắc nghẽn ở khâu up/down.
+   * Thu cạnh dài về imageMaxDim (mặc định 1600px, JPEG 80): mắt thường xem
+   * điện thoại không phân biệt được, dung lượng giảm 3–5 lần. Bỏ qua gif.
+   */
+  async shrinkImage(file, ext) {
+    if (!["jpg", "jpeg", "png", "webp"].includes(String(ext).toLowerCase())) return;
+    const maxDim = Number(this.config.forward.imageMaxDim) || 0;
+    if (maxDim <= 0) return;
+    const quality = Math.min(100, Math.max(10, Number(this.config.forward.imageQuality) || 80));
+    try {
+      const before = fs.statSync(file).size;
+      const meta = await sharp(file).metadata();
+      if (!meta.width || !meta.height) return;
+      if (Math.max(meta.width, meta.height) <= maxDim) return;
+      const format = meta.format === "png" ? "png" : meta.format === "webp" ? "webp" : "jpeg";
+      const tmp = `${file}.small`;
+      await sharp(file)
+        .resize({ width: maxDim, height: maxDim, fit: "inside", withoutEnlargement: true })
+        .toFormat(format, { quality })
+        .toFile(tmp);
+      const after = fs.statSync(tmp).size;
+      if (after >= before) {
+        fs.rmSync(tmp, { force: true });
+        return;
+      }
+      fs.renameSync(tmp, file);
+      logger.debug(`Nén ảnh ${Math.round(before / 1024)}KB → ${Math.round(after / 1024)}KB (${meta.width}x${meta.height})`);
+    } catch (e) {
+      logger.debug(`Bỏ qua nén ảnh ${file} (${e.message}) — gửi bản gốc`);
+      try {
+        fs.rmSync(`${file}.small`, { force: true });
+      } catch {}
     }
   }
 

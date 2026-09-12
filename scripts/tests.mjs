@@ -1616,6 +1616,33 @@ assertEq("không còn gọi video native", mixedNativeVideos.length, 0);
 assertEq("video được tải dạng file sau ảnh", mixedDownloadTypes.join(","), "image,image,video");
 assertEq("video file gửi sau album ảnh", mixedMediaApi._sent.length, 2);
 assertEq("album ảnh được gửi trước video theo thứ tự nguồn", mixedMediaSendOrder.join(","), "images,images");
+const { default: sharp } = await import("sharp");
+const shrinkFw = new Forwarder(makeApi(), parseConfig({
+  sourceGroups: ["shrink-source"],
+  areas: [{ id: "shrink-destination", matchAll: true }],
+  forward: { sendDelayMs: 0, retries: 0, imageMaxDim: 1600, imageQuality: 80 },
+}), () => {});
+const bigFile = path.join(os.tmpdir(), `zalosale-shrink-big-${Date.now()}.jpg`);
+await sharp({ create: { width: 3000, height: 2000, channels: 3, background: { r: 200, g: 100, b: 50 } } }).jpeg({ quality: 95 }).toFile(bigFile);
+const bigBefore = fs.statSync(bigFile).size;
+await shrinkFw.shrinkImage(bigFile, "jpg");
+const bigMeta = await sharp(bigFile).metadata();
+assertEq("ảnh lớn được thu cạnh dài về 1600", Math.max(bigMeta.width, bigMeta.height) <= 1600, true);
+assertEq("ảnh sau nén nhẹ hơn", fs.statSync(bigFile).size < bigBefore, true);
+const smallFile = path.join(os.tmpdir(), `zalosale-shrink-small-${Date.now()}.jpg`);
+await sharp({ create: { width: 800, height: 600, channels: 3, background: { r: 10, g: 20, b: 30 } } }).jpeg({ quality: 95 }).toFile(smallFile);
+const smallBefore = fs.statSync(smallFile).size;
+await shrinkFw.shrinkImage(smallFile, "jpg");
+assertEq("ảnh nhỏ giữ nguyên", fs.statSync(smallFile).size === smallBefore, true);
+const noShrinkFw = new Forwarder(makeApi(), parseConfig({
+  sourceGroups: ["shrink-source"],
+  areas: [{ id: "shrink-destination", matchAll: true }],
+  forward: { sendDelayMs: 0, retries: 0, imageMaxDim: 0 },
+}), () => {});
+await noShrinkFw.shrinkImage(bigFile, "jpg");
+assertEq("imageMaxDim 0 thì tắt nén", fs.statSync(bigFile).size < bigBefore, true);
+fs.rmSync(bigFile, { force: true });
+fs.rmSync(smallFile, { force: true });
 assertEq(
   "bỏ album ảnh chồng lên cụm tòa ngay trước đó",
   isRepeatedPhotoOnlyCluster([
