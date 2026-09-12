@@ -648,7 +648,7 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
     return true;
   }
 
-  async function forwardSelected(scanId, indexes, destinationKeyword = "") {
+  async function forwardSelected(scanId, indexes, destinationKeyword = "", forceResend = false) {
     const scan = scans.get(scanId);
     if (!scan) return { sent: 0, error: "Không tìm thấy kết quả quét này — hãy quét lại." };
     const target = destinationKeyword
@@ -662,7 +662,6 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
       .sort((left, right) => (left.post.ts - right.post.ts) || left.post.id.localeCompare(right.post.id));
     let sent = 0;
     let failed = 0;
-    const completedPostIds = new Set();
     manualProgress = {
       running: true,
       current: 0,
@@ -686,21 +685,22 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
         source: "manual",
         ...raw.batchMeta,
         inheritedDestinations: target ? [target] : raw.batchMeta.inheritedDestinations,
+        forceResend,
       });
       if (outcome?.sent && !outcome?.error) {
-        completedPostIds.add(post.id);
+        // Tin đã gửi ở lại bảng (trạng thái sent) để còn Gửi lại.
+        post.status = "sent";
         sent++;
       } else if (outcome?.error) {
         post.status = "error";
         failed++;
-      } else if (outcome?.duplicate) {
-        completedPostIds.add(post.id);
+      } else if (outcome?.duplicate && post.status !== "sent") {
+        post.status = "duplicate";
       }
     }
     manualProgress.running = false;
     manualProgress.stopped = manualProgress.stopRequested;
     manualProgress.endedAt = Date.now();
-    removeScanPosts(scan, completedPostIds);
     persistScan(scan);
     return { sent, failed, stopped: manualProgress.stopped };
   }
@@ -708,7 +708,12 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
   async function forwardAll(scanId) {
     const scan = scans.get(scanId);
     if (!scan) return { sent: 0, error: "Không tìm thấy kết quả quét này — hãy quét lại." };
-    return forwardSelected(scanId, scan.posts.map((_, i) => i));
+    // Bỏ qua tin đã gửi (muốn gửi lại thì bấm Gửi lại từng tin).
+    const indexes = scan.posts
+      .map((post, i) => ({ post, i }))
+      .filter(({ post }) => post.status !== "sent")
+      .map(({ i }) => i);
+    return forwardSelected(scanId, indexes);
   }
 
   /* ---------- lệnh DM ---------- */

@@ -180,13 +180,12 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
   };
 
   const sendAll = async () => {
-    if (!scanId || !posts.length) return;
+    if (!scanId || !posts.some((post) => post.status !== "sent")) return;
     setBusy(true);
     setSending(true);
     try {
       const r = (await api.control({ action: "forwardAll", scanId })) as { ok: true; sent: number; failed?: number; stopped?: boolean; posts?: ScanPost[]; progress?: ScanProgress | null };
       if (r.posts) setPosts(r.posts);
-      if (r.progress) setProgress(r.progress);
       setMsg(r.stopped ? { t: `Đã dừng sau cụm ${r.progress?.current || 0}/${r.progress?.total || 0}`, k: "ok" } : r.failed ? { t: `Đã gửi ${r.sent} bài, ${r.failed} bài lỗi — xem cột Trạng thái`, k: "err" } : { t: `✓ Đã đưa cả ${r.sent} bài vào hàng đợi gửi — xem Nhật ký`, k: "ok" });
       setSelected(new Set());
     } catch (e) {
@@ -218,13 +217,38 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
 
   const sendPostToDestination = async (postIndex: number, destinationKeyword: string) => {
     if (!scanId || busy) return;
+    const post = posts[postIndex];
     setBusy(true);
     setSending(true);
     try {
-      const r = (await api.control({ action: "forwardSel", scanId, indexes: [postIndex], destinationKeyword })) as { ok: true; sent: number; failed?: number; posts?: ScanPost[]; progress?: ScanProgress | null };
+      const r = (await api.control({ action: "forwardSel", scanId, indexes: [postIndex], destinationKeyword, force: post?.status === "sent" })) as { ok: true; sent: number; failed?: number; posts?: ScanPost[]; progress?: ScanProgress | null };
       if (r.posts) setPosts(r.posts);
       if (r.progress) setProgress(r.progress);
       setMsg(r.failed ? { t: `Gửi tin vào nhóm ${destinationKeyword} bị lỗi — xem cột Trạng thái`, k: "err" } : { t: `✓ Đã đưa tin vào nhóm ${destinationKeyword}`, k: "ok" });
+    } catch (e) {
+      setMsg({ t: (e as Error).message, k: "err" });
+    } finally {
+      setBusy(false);
+      setSending(false);
+    }
+  };
+
+  const sendPostAgain = async (postIndex: number) => {
+    const post = posts[postIndex];
+    if (!scanId || busy || !post?.destinationNames.length) return;
+    setBusy(true);
+    setSending(true);
+    try {
+      let sent = 0;
+      let failed = 0;
+      for (const destinationKeyword of post.destinationNames) {
+        const r = (await api.control({ action: "forwardSel", scanId, indexes: [postIndex], destinationKeyword, force: true })) as { ok: true; sent: number; failed?: number; posts?: ScanPost[]; progress?: ScanProgress | null };
+        sent += r.sent;
+        failed += r.failed || 0;
+        if (r.posts) setPosts(r.posts);
+        if (r.progress) setProgress(r.progress);
+      }
+      setMsg(failed ? { t: `Gửi lại xong: ${sent} nơi ok, ${failed} nơi lỗi`, k: "err" } : { t: `✓ Đã gửi lại vào ${sent} nhóm`, k: "ok" });
     } catch (e) {
       setMsg({ t: (e as Error).message, k: "err" });
     } finally {
@@ -269,6 +293,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
 
   const totalPages = Math.max(1, Math.ceil(filteredEntries.length / SCAN_PAGE_SIZE));
   const currentPage = Math.min(page, totalPages - 1);
+  const unsentCount = posts.filter((post) => post.status !== "sent").length;
   const pageEntries = filteredEntries.slice(currentPage * SCAN_PAGE_SIZE, (currentPage + 1) * SCAN_PAGE_SIZE);
   const allChecked = pageEntries.length > 0 && pageEntries.every(({ index }) => selected.has(index));
 
@@ -337,8 +362,8 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
             <button className="mini" onClick={sendSelected} disabled={busy || !selected.size}>
               📤 Gửi tin đã chọn ({selected.size})
             </button>
-            <button className="mini primary" onClick={sendAll} disabled={busy}>
-              📤 Gửi tất cả ({posts.length})
+            <button className="mini primary" onClick={sendAll} disabled={busy || !unsentCount}>
+              📤 Gửi tất cả ({unsentCount})
             </button>
             <button className="mini" onClick={() => setSelected(new Set(filteredEntries.map(({ index }) => index)))} disabled={busy || !filteredEntries.length}>
               ☑ Chọn {filteredEntries.length} bài đang xem
@@ -426,6 +451,11 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
                         ))}
                         {p.routingReason && (
                           <div className="hint" style={{ margin: "2px 0 0", fontSize: 11 }}>via {ROUTE_REASON_LABELS[p.routingReason] || p.routingReason}{p.matchedRules?.length ? `: ${p.matchedRules.map((r) => r.name).join(", ")}` : ""}</div>
+                        )}
+                        {p.status === "sent" && (
+                          <button className="mini" type="button" disabled={busy} onClick={() => sendPostAgain(i)} style={{ marginTop: 4 }}>
+                            ↻ Gửi lại
+                          </button>
                         )}
                       </div>
                     ) : (

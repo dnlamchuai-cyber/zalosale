@@ -388,8 +388,10 @@ export class Forwarder {
       for (const destination of destinations) {
         const destId = await this.resolveThreadId(destination);
         const signature = `${destId}|${urls.join(",")}|${clean}`;
-        const alreadyStored = await this.isPreviouslySent({ destinationId: destId, content: clean });
-        if (this.seen.has(signature) || alreadyStored) {
+        const alreadyStored = payload.forceResend === true
+          ? false
+          : await this.isPreviouslySent({ destinationId: destId, content: clean });
+        if (!payload.forceResend && (this.seen.has(signature) || alreadyStored)) {
           logger.info(`Bỏ qua: bài đăng trùng trong nhóm ${destId}`);
           duplicateCount++;
           continue;
@@ -437,7 +439,8 @@ export class Forwarder {
 
   async download(url, mediaType = "image") {
     try {
-      const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+      // WHY: CDN treo là cả hàng đợi đứng theo — 30s không xong thì bỏ ảnh đó, đi tiếp.
+      const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(30000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = Buffer.from(await res.arrayBuffer());
       const urlExtension = url.match(/\.([a-z0-9]+)(?:[?#]|$)/i)?.[1]?.toLowerCase();

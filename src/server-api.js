@@ -178,7 +178,7 @@ export class ApiServer {
             if (!indexes.length) return res.status(400).json({ ok: false, error: "Chưa chọn tin nào" });
             const destinationKeyword = typeof body.destinationKeyword === "string" ? body.destinationKeyword.trim() : "";
             if (destinationKeyword.length > 100) return res.status(400).json({ ok: false, error: "Từ khóa nhóm đích tối đa 100 ký tự" });
-            const r = bot?.forwardSelected ? await bot.forwardSelected(String(body.scanId), indexes, destinationKeyword) : { sent: 0, error: "Bot chưa sẵn sàng" };
+            const r = bot?.forwardSelected ? await bot.forwardSelected(String(body.scanId), indexes, destinationKeyword, body.force === true) : { sent: 0, error: "Bot chưa sẵn sàng" };
             if (r.error) return res.status(400).json({ ok: false, error: r.error });
             return res.json({ ok: true, sent: r.sent, failed: r.failed || 0, stopped: r.stopped || false, posts: bot?.scanState?.()?.posts || [], progress: bot?.scanState?.()?.progress || null });
           }
