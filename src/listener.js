@@ -93,6 +93,19 @@ export function removeScanPosts(scan, postIds) {
 }
 
 /**
+ * Tin quét có coi là đã gửi không.
+ * - Nội dung khớp kho đã gửi (tin ngắn), HOẶC
+ * - mọi ID tin nhắn trong cụm đều đã gửi (bảng quét cắt nội dung 400 ký tự nên
+ *   hash nội dung có thể lệch với lúc gửi — đối chiếu ID thì luôn đúng).
+ */
+export async function isSentScanPost(post, items, wasSourceContentSent, wasMessageClusterSent) {
+  if (!post) return false;
+  if (post.clean && await wasSourceContentSent({ sourceId: post.tid, content: post.clean })) return true;
+  const ids = messageIdsOf(items);
+  return ids.length > 0 && (await wasMessageClusterSent(ids)) >= ids.length;
+}
+
+/**
  * Khởi tạo bot: lắng nghe tin nhắn, nhận diện nhóm nguồn,
  * gom bài qua batcher, forward qua forwarder, xử lý lệnh DM.
  */
@@ -488,7 +501,8 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
     if (!scan?.posts?.length) return;
     const completedPostIds = new Set();
     for (const post of scan.posts) {
-      if (post.clean && await wasSourceContentSent({ sourceId: post.tid, content: post.clean })) {
+      const rawEntry = scan.raw?.get(post.id);
+      if (await isSentScanPost(post, rawEntry?.items, wasSourceContentSent, wasMessageClusterSent)) {
         completedPostIds.add(post.id);
       }
     }
@@ -691,6 +705,8 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
         // Tin đã gửi ở lại bảng (trạng thái sent) để còn Gửi lại.
         post.status = "sent";
         sent++;
+        // Lưu bảng sau mỗi 10 tin để sập server giữa chừng cũng không mất trạng thái.
+        if (sent % 10 === 0) persistScan(scan);
       } else if (outcome?.error) {
         post.status = "error";
         failed++;

@@ -2,7 +2,7 @@
 // SPEC: yêu cầu quản lý nhóm nguồn ngày 11/09/2026
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pruneScanSources, removeScanPosts } from "./listener.js";
+import { isSentScanPost, pruneScanSources, removeScanPosts } from "./listener.js";
 
 test("bỏ dữ liệu quét và raw payload của nhóm nguồn đã xóa", () => {
   const scan = {
@@ -31,4 +31,28 @@ test("xóa ngay payload của tin đã gửi khỏi danh sách quét", () => {
   assert.deepEqual(scan.posts.map((post) => post.id), ["pending"]);
   assert.deepEqual([...scan.raw.keys()], ["pending"]);
   assert.equal(scan.groups, 1);
+});
+
+test("nhận diện tin đã gửi: khớp nội dung ngắn hoặc khớp mọi ID tin (bảng cắt 400 ký tự)", async () => {
+  const no = async () => false;
+  const zero = async () => 0;
+  // Tin ngắn khớp nội dung là đủ.
+  assert.equal(
+    await isSentScanPost({ id: "a", tid: "s", clean: "ngắn" }, [], async () => true, zero),
+    true,
+  );
+  // Tin dài: nội dung cắt 400 ký tự không khớp, nhưng mọi ID tin đều đã gửi.
+  const longClean = `x`.repeat(400);
+  const items = [{ data: { msgId: "m1" } }, { data: { cliMsgId: "m2" } }];
+  assert.equal(
+    await isSentScanPost({ id: "b", tid: "s", clean: longClean }, items, no, async (ids) => ids.length),
+    true,
+  );
+  // Thiếu 1 ID chưa gửi thì giữ lại.
+  assert.equal(
+    await isSentScanPost({ id: "c", tid: "s", clean: longClean }, items, no, async () => 1),
+    false,
+  );
+  // Không nội dung, không ID thì giữ lại.
+  assert.equal(await isSentScanPost({ id: "d", tid: "s" }, [], no, zero), false);
 });
