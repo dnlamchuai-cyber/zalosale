@@ -105,6 +105,7 @@ async function startRuntime(server, state, config) {
     scanStatePath: SCAN_STATE_PATH,
     closingStickerStore,
     wasSourceContentSent: async ({ sourceId, content }) => state.sentMessageIndex.hasSourceSent({ sourceId, content }),
+    wasMessageClusterSent: async (ids) => state.sentMessageIndex.countSentMessageIds(ids),
   });
   state.bot = bot;
   state.api = api;

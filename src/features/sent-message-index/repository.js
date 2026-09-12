@@ -86,6 +86,15 @@ export function createSentMessageRepository(databasePath) {
         delivery.originalContent, delivery.sentContent, delivery.contentHash,
         delivery.sentAt, capturedAt, delivery.imageTotal,
       );
+      const sentAt = delivery.sentAt;
+      const msgIds = [...new Set((delivery.messageIds || []).map(String).filter(Boolean))];
+      if (msgIds.length) {
+        const placeholders = msgIds.map(() => "(?, ?)").join(", ");
+        const params = msgIds.flatMap((id) => [id, sentAt]);
+        database.prepare(
+          `INSERT OR IGNORE INTO sent_message_ids (message_id, sent_at) VALUES ${placeholders}`
+        ).run(...params);
+      }
       return room.id;
     });
   }
@@ -134,16 +143,26 @@ export function createSentMessageRepository(databasePath) {
     `).get(String(sourceId), String(contentHash)));
   }
 
+  /** Đếm trong danh sách có bao nhiêu ID tin đã gửi (để loại cả cụm khi quét lại). */
+  function countSentMessageIds(ids) {
+    const list = [...new Set((ids || []).map(String).filter(Boolean))];
+    if (!list.length) return 0;
+    const placeholders = list.map(() => "?").join(", ");
+    return database.prepare(
+      `SELECT COUNT(*) AS total FROM sent_message_ids WHERE message_id IN (${placeholders})`
+    ).get(...list).total;
+  }
+
   function clearDeliveries() {
     return transaction(() => {
       const roomCount = database.prepare("SELECT COUNT(*) AS total FROM room_records").get().total;
-      database.exec("DELETE FROM room_search; DELETE FROM sent_messages; DELETE FROM room_records;");
+      database.exec("DELETE FROM room_search; DELETE FROM sent_messages; DELETE FROM room_records; DELETE FROM sent_message_ids;");
       database.exec("DELETE FROM zalo_groups WHERE id NOT IN (SELECT source_group_id FROM sent_messages UNION SELECT destination_group_id FROM sent_messages);");
       return roomCount;
     });
   }
 
   return {
-    database, recordDelivery, hasDelivery, hasSourceDelivery, clearDeliveries, roomRows, deliveriesForRooms, close: () => database.close(),
+    database, recordDelivery, hasDelivery, hasSourceDelivery, countSentMessageIds, clearDeliveries, roomRows, deliveriesForRooms, close: () => database.close(),
   };
 }

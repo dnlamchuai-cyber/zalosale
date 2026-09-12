@@ -46,3 +46,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS room_search USING fts5(
   search_text,
   tokenize = 'unicode61 remove_diacritics 2'
 );
+
+-- ID tin nhắn Zalo đã gửi (msgId/cliMsgId): quét lại gặp đúng tin cũ thì loại,
+-- tin khác ID vẫn xét tiếp bằng content-hash như cũ.
+CREATE TABLE IF NOT EXISTS sent_message_ids (
+  message_id TEXT PRIMARY KEY,
+  sent_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sent_message_ids_time_idx ON sent_message_ids(sent_at DESC);

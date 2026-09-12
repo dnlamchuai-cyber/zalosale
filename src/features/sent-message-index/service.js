@@ -96,9 +96,14 @@ export function createSentMessageIndex({ databasePath = DEFAULT_DATABASE_PATH } 
     return repository.hasSourceDelivery(sourceId, contentHash(content));
   }
 
+  function countSentMessageIds(ids) {
+    if (!Array.isArray(ids) || !ids.length) return 0;
+    return repository.countSentMessageIds(ids);
+  }
+
   function clear() {
     return repository.clearDeliveries();
   }
 
-  return { recordBotDelivery, hasSent, hasSourceSent, search, clear, close: repository.close };
+  return { recordBotDelivery, hasSent, hasSourceSent, countSentMessageIds, search, clear, close: repository.close };
 }

@@ -66,6 +66,17 @@ function isTextItem(item) {
   return typeof item?.data?.content === "string";
 }
 
+/** ID tin Zalo trong cụm (msgId/cliMsgId) — để quét lại loại đúng tin cũ đã gửi. */
+export function messageIdsOf(items) {
+  const ids = [];
+  for (const item of items || []) {
+    const data = item?.data ?? {};
+    if (data.msgId) ids.push(String(data.msgId));
+    if (data.cliMsgId) ids.push(String(data.cliMsgId));
+  }
+  return [...new Set(ids)];
+}
+
 export async function mapWithConcurrency(values, limit, worker) {
   const results = new Array(values.length);
   let nextIndex = 0;
@@ -397,6 +408,7 @@ export class Forwarder {
               sentContent: clean,
               sentAt: Date.now(),
               imageTotal: files.length,
+              messageIds: messageIdsOf(items),
             });
           } catch {
             logger.error(`Đã gửi nhóm ${destId} nhưng không lưu được vào kho tin`);

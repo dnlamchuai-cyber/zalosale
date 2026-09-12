@@ -778,8 +778,8 @@ multiSourceBot.stop();
 // Hai nhóm đăng cùng nội dung: giữ bài đầu, đánh dấu bản sau là trùng.
 const dupApi = makeApi({
   history: {
-    g001: [{ data: { ts: nowT - 500, content: "Địa chỉ: Hà Đông\nPhòng đẹp giá 4tr" } }],
-    [secondSourceId]: [{ data: { ts: nowT - 400, content: "Địa chỉ: Hà Đông\nPhòng đẹp giá 4tr" } }],
+    g001: [{ data: { msgId: "m-g1", ts: nowT - 500, content: "Địa chỉ: Hà Đông\nPhòng đẹp giá 4tr" } }],
+    [secondSourceId]: [{ data: { msgId: "m-g2", ts: nowT - 400, content: "Địa chỉ: Hà Đông\nPhòng đẹp giá 4tr" } }],
   },
   groupLink: sourceLink,
 });
@@ -796,6 +796,38 @@ assertEq("cùng nội dung vẫn hiện đủ 2 bài", dupScan.posts.length, 2);
 assertEq("bản trùng bị đánh dấu", dupScan.posts.filter((p) => p.status === "duplicate").length, 1);
 assertEq("bản trùng trỏ về bản đầu", typeof dupScan.posts.find((p) => p.status === "duplicate")?.duplicateOf, "string");
 dupBot.stop();
+
+// Quét lại sau khi gửi: đúng ID tin đã gửi thì loại (kể cả khác nhóm cũng không thêm lại).
+const { createSentMessageIndex } = await import("../src/features/sent-message-index/service.js");
+const rescanIndex = createSentMessageIndex({ databasePath: path.join(os.tmpdir(), `zalosale-rescan-${Date.now()}.sqlite`) });
+const rescanFw = new Forwarder(
+  dupApi,
+  { ...CFG, sourceGroups: [sourceLink, secondSourceId], areas: [{ id: "dest-1", keywords: ["ha dong"] }] },
+  () => {},
+  async (delivery) => {
+    rescanIndex.recordBotDelivery({ ...delivery, sourceGroup: { id: delivery.sourceGroupId, name: "Nhom" } });
+  },
+);
+const rescanBot = startBot({
+  api: dupApi,
+  config: { ...CFG, sourceGroups: [sourceLink, secondSourceId], areas: [{ id: "dest-1", keywords: ["ha dong"] }] },
+  batcher: null,
+  forwarder: rescanFw,
+  status: { startedAt: new Date(), forwarded: 0, mode: "manual", knownSources: [] },
+  wasSourceContentSent: async ({ sourceId, content }) => rescanIndex.hasSourceSent({ sourceId, content }),
+  wasMessageClusterSent: async (ids) => rescanIndex.countSentMessageIds(ids),
+});
+await sleep(120);
+const rescan1 = await rescanBot.scanRange("", { fromMs: nowT - 86400000, toMs: nowT + 1000 });
+assertEq("lần quét đầu thấy đủ 2 bài", rescan1.posts.length, 2);
+const sentOnce = await rescanBot.forwardSelected(rescan1.scanId, [0]);
+assertEq("gửi bài đầu thành công", sentOnce.sent, 1);
+const rescan2 = await rescanBot.scanRange("", { fromMs: nowT - 86400000, toMs: nowT + 1000 });
+assertEq("quét lại loại đúng tin đã gửi", rescan2.posts.length, 1);
+// posts[0] là tin của nhóm 2002 (resolve trước) nên đã gửi; còn lại là tin nhóm g001 chưa gửi.
+assertEq("tin còn lại là của nhóm chưa gửi", rescan2.posts[0]?.tid, "g001");
+rescanBot.stop();
+rescanIndex.close();
 
 /* ---------------- 6. scan chọn sai vùng ảnh hưởng không? ---------------- */
 console.log("\n=== listener: kiểm tra scan không gửi gì (preview thuần) ===");

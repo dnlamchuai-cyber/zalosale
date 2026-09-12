@@ -7,6 +7,7 @@ import { photoUrls } from "./media.js";
 import { GROUPS_CACHE_PATH } from "./config.js";
 import { readPersistedGroups, toPersistedGroups } from "./group-cache.js";
 import { readPersistedScanSync, writePersistedScanSync } from "./scan-state.js";
+import { messageIdsOf } from "./forwarder.js";
 import { extractStickerId } from "./closing-sticker.js";
 import { parseFullBuildingNotice } from "./full-building.js";
 
@@ -95,7 +96,7 @@ export function removeScanPosts(scan, postIds) {
  * Khởi tạo bot: lắng nghe tin nhắn, nhận diện nhóm nguồn,
  * gom bài qua batcher, forward qua forwarder, xử lý lệnh DM.
  */
-export function startBot({ api, config, batcher, forwarder, status, groupsCachePath = GROUPS_CACHE_PATH, scanStatePath = null, closingStickerStore = null, wasSourceContentSent = async () => false }) {
+export function startBot({ api, config, batcher, forwarder, status, groupsCachePath = GROUPS_CACHE_PATH, scanStatePath = null, closingStickerStore = null, wasSourceContentSent = async () => false, wasMessageClusterSent = async () => 0 }) {
   const { listener } = api;
   let sourceNames = config.sourceGroups.filter((s) => !isGroupLink(s)).map(nameKey).filter(Boolean);
   let sourceLinks = config.sourceGroups.filter((s) => isGroupLink(s)).map((s) => String(s).trim());
@@ -562,6 +563,12 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
         if (!d.clean && !d.photoCount) continue;
         if (d.clean && await wasSourceContentSent({ sourceId: id, content: d.clean })) {
           logger.info(`Bỏ qua cụm đã gửi từ nhóm nguồn ${id}`);
+          continue;
+        }
+        // Quét lại gặp đúng ID tin đã gửi (kể cả khác nhóm) thì loại, không thêm lại.
+        const clusterMsgIds = messageIdsOf(items);
+        if (clusterMsgIds.length && (await wasMessageClusterSent(clusterMsgIds)) >= clusterMsgIds.length) {
+          logger.info(`Bỏ qua cụm đã gửi (trùng ID tin nhắn) từ nhóm ${name}`);
           continue;
         }
         const t = Number(items[0]?.data?.ts || items[0]?.ts || 0);

@@ -67,11 +67,23 @@ try {
     true,
   );
 
+  index.recordBotDelivery({
+    ...baseDelivery,
+    destinationGroup: { id: "dest-b", name: "Khách thuê Cầu Giấy" },
+    sentContent: "Mã: R152\nĐịa chỉ mới",
+    originalContent: "Mã: R152\nĐịa chỉ mới",
+    messageIds: ["m1", "m2", "m1"],
+  });
+  assert.equal(index.countSentMessageIds(["m1", "m2"]), 2);
+  assert.equal(index.countSentMessageIds(["m1", "chua-gui"]), 1);
+  assert.equal(index.countSentMessageIds([]), 0);
+  assert.equal(index.countSentMessageIds(["khong-co"]), 0);
+
   assert.throws(
     () => index.search({ query: "x".repeat(201), limit: 20 }),
     /tối đa 200/i,
   );
-  assert.equal(index.clear(), 1);
+  assert.equal(index.clear(), 2);
   assert.deepEqual(index.search({ query: "", limit: 20 }), []);
   index.close();
 
