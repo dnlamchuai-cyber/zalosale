@@ -1584,6 +1584,24 @@ assertEq("video vẫn hoàn tất cụm bằng file", fallbackVideoResult.destin
 assertEq("video được tải dạng file", fallbackVideoDownloadType, "video");
 assertEq("gửi đúng file video", fallbackVideoApi._sent[0]?.message.attachments[0].endsWith(".mp4"), true);
 
+const skipVideoApi = makeApi();
+skipVideoApi.sendMessage = async (message, threadId, type) => {
+  skipVideoApi._sent.push({ message, threadId, type });
+};
+const skipVideoForwarder = new Forwarder(skipVideoApi, parseConfig({
+  sourceGroups: ["video-source"],
+  areas: [{ id: "video-destination", matchAll: true }],
+  forward: { sendDelayMs: 0, retries: 0 },
+}), () => {});
+skipVideoForwarder.download = async () => null;
+const skipVideoResult = await skipVideoForwarder.forwardPayload({
+  threadId: "video-source",
+  items: [{ data: { content: "Địa chỉ: Hà Đông" } }, videoItem],
+  source: "manual",
+});
+assertEq("video tải lỗi vẫn gửi được chữ", skipVideoResult.sent, true);
+assertEq("video tải lỗi vẫn hoàn tất đích", skipVideoResult.destinations, 1);
+
 const mixedMediaApi = makeApi();
 const mixedNativeVideos = [];
 const mixedMediaSendOrder = [];

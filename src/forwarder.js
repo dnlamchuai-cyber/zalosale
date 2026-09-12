@@ -437,10 +437,10 @@ export class Forwarder {
     }
   }
 
-  async download(url, mediaType = "image") {
+  async download(url, mediaType = "image", timeoutMs = 30000) {
     try {
-      // WHY: CDN treo là cả hàng đợi đứng theo — 30s không xong thì bỏ ảnh đó, đi tiếp.
-      const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(30000) });
+      // WHY: CDN treo là cả hàng đợi đứng theo — quá timeout thì bỏ file đó, đi tiếp.
+      const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(timeoutMs) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = Buffer.from(await res.arrayBuffer());
       const urlExtension = url.match(/\.([a-z0-9]+)(?:[?#]|$)/i)?.[1]?.toLowerCase();
@@ -513,12 +513,17 @@ export class Forwarder {
   }
 
   // WHY: Zalo luôn từ chối video native ("Tham số không hợp lệ") — bỏ native,
-  // tải video về và gửi thẳng dạng file đính kèm.
+  // tải video về và gửi thẳng dạng file đính kèm. Video nặng nên chờ lâu hơn ảnh;
+  // tải lỗi thì bỏ video, vẫn gửi chữ + ảnh còn lại (trả về false).
   async sendVideoAsFile(destId, unit, cleanupFiles) {
-    const videoFile = await this.download(unit.videoUrl, "video");
-    if (!videoFile) throw new Error("Không tải được video nguồn để gửi dạng file");
+    const videoFile = await this.download(unit.videoUrl, "video", 120000);
+    if (!videoFile) {
+      logger.warn("Bỏ video (tải quá 120s hoặc lỗi) — vẫn gửi chữ và ảnh còn lại của cụm");
+      return false;
+    }
     cleanupFiles.push(videoFile);
     await this.sendWithRetry(destId, "", [videoFile]);
+    return true;
   }
 
   async sendBatchWithRetry(destId, text, files) {
