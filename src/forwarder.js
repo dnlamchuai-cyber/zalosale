@@ -382,16 +382,24 @@ export class Forwarder {
         downloadedMedia.set(mediaKey(unitIndex, mediaIndex), file);
       });
       const preparedUnits = prepareDeliveryUnits(deliveryUnits, downloadedMedia);
+      const hasVideo = preparedUnits.some((unit) => unit.kind === "video");
+      const imageTotal = preparedUnits
+        .filter((unit) => unit.kind === "images")
+        .reduce((total, unit) => total + (unit.files?.length || 0), 0);
+      // videoOnly: gửi lại riêng video (không gửi trùng chữ/ảnh).
+      const videoOnly = payload.videoOnly === true;
+      const bypassDedup = videoOnly || payload.forceResend === true;
       let sentCount = 0;
       let failedCount = 0;
       let duplicateCount = 0;
+      let videoSent = false;
       for (const destination of destinations) {
         const destId = await this.resolveThreadId(destination);
         const signature = `${destId}|${urls.join(",")}|${clean}`;
-        const alreadyStored = payload.forceResend === true
+        const alreadyStored = bypassDedup
           ? false
           : await this.isPreviouslySent({ destinationId: destId, content: clean });
-        if (!payload.forceResend && (this.seen.has(signature) || alreadyStored)) {
+        if (!bypassDedup && (this.seen.has(signature) || alreadyStored)) {
           logger.info(`Bỏ qua: bài đăng trùng trong nhóm ${destId}`);
           duplicateCount++;
           continue;
@@ -399,22 +407,28 @@ export class Forwarder {
         logger.info(`Forward ${payload.source}: khu vực "${destinationLabel(destination)}" → nhóm ${destId} (${urls.length} media)`);
         try {
           for (const unit of preparedUnits) {
-            if (unit.kind === "video") await this.sendVideoAsFile(destId, unit, files);
-            else await this.sendWithRetry(destId, unit.text, unit.files || []);
+            if (unit.kind === "video") {
+              if (await this.sendVideoAsFile(destId, unit, files)) videoSent = true;
+            } else if (!videoOnly) {
+              await this.sendWithRetry(destId, unit.text, unit.files || []);
+            }
           }
           await this.sendClosingSticker(destId);
-          try {
-            await this.onDelivery({
-              sourceGroupId: String(payload.threadId || ""),
-              destinationGroup: { id: destId, name: destinationLabel(destination) },
-              originalContent: text,
-              sentContent: clean,
-              sentAt: Date.now(),
-              imageTotal: files.length,
-              messageIds: messageIdsOf(items),
-            });
-          } catch {
-            logger.error(`Đã gửi nhóm ${destId} nhưng không lưu được vào kho tin`);
+          // Gửi lại riêng video thì nội dung đã lưu rồi — không ghi trùng kho.
+          if (!videoOnly) {
+            try {
+              await this.onDelivery({
+                sourceGroupId: String(payload.threadId || ""),
+                destinationGroup: { id: destId, name: destinationLabel(destination) },
+                originalContent: text,
+                sentContent: clean,
+                sentAt: Date.now(),
+                imageTotal: files.length,
+                messageIds: messageIdsOf(items),
+              });
+            } catch {
+              logger.error(`Đã gửi nhóm ${destId} nhưng không lưu được vào kho tin`);
+            }
           }
           this.seen.add(signature);
           sentCount++;
@@ -431,6 +445,8 @@ export class Forwarder {
         destinations: sentCount,
         duplicate: sentCount === 0 && failedCount === 0 && duplicateCount > 0,
         error: failedCount > 0,
+        videoStatus: !hasVideo ? "none" : videoSent ? "sent" : "failed",
+        sentImages: sentCount > 0 && !videoOnly ? imageTotal : 0,
       };
     } finally {
       for (const f of files) fs.rmSync(f, { force: true });

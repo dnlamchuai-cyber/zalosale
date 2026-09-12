@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { logger } from "./logger.js";
 import { normalizeText, parseCommissionPercent } from "./processor.js";
-import { photoUrls } from "./media.js";
+import { photoUrls, videoUrls } from "./media.js";
 import { GROUPS_CACHE_PATH } from "./config.js";
 import { readPersistedGroups, toPersistedGroups } from "./group-cache.js";
 import { readPersistedScanSync, writePersistedScanSync } from "./scan-state.js";
@@ -599,6 +599,8 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
           routingKeys: d.routingKeys || [],
           matchedRules: d.matchedRules || [],
           undetermined: Boolean(d.undetermined),
+          videoStatus: items.some((item) => videoUrls(item).length > 0) ? "pending" : null,
+          sentImages: 0,
           kw: d.kw,
           clean: (d.clean || "").slice(0, 400),
           photos: d.photoCount,
@@ -662,7 +664,7 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
     return true;
   }
 
-  async function forwardSelected(scanId, indexes, destinationKeyword = "", forceResend = false) {
+  async function forwardSelected(scanId, indexes, destinationKeyword = "", forceResend = false, videoOnly = false) {
     const scan = scans.get(scanId);
     if (!scan) return { sent: 0, error: "Không tìm thấy kết quả quét này — hãy quét lại." };
     const target = destinationKeyword
@@ -700,6 +702,7 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
         ...raw.batchMeta,
         inheritedDestinations: target ? [target] : raw.batchMeta.inheritedDestinations,
         forceResend,
+        videoOnly,
       });
       if (outcome?.sent && !outcome?.error) {
         // Tin đã gửi ở lại bảng (trạng thái sent) để còn Gửi lại.
@@ -712,6 +715,12 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
         failed++;
       } else if (outcome?.duplicate && post.status !== "sent") {
         post.status = "duplicate";
+      }
+      if (outcome?.videoStatus && outcome.videoStatus !== "none") {
+        post.videoStatus = outcome.videoStatus;
+      }
+      if (!videoOnly && outcome?.sent && typeof outcome?.sentImages === "number") {
+        post.sentImages = outcome.sentImages;
       }
     }
     manualProgress.running = false;

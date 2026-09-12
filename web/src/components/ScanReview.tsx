@@ -233,8 +233,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
     }
   };
 
-  const sendPostAgain = async (postIndex: number) => {
-    const post = posts[postIndex];
+  const sendPostAgain = async (postIndex: number) => {    const post = posts[postIndex];
     if (!scanId || busy || !post?.destinationNames.length) return;
     setBusy(true);
     setSending(true);
@@ -249,6 +248,30 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
         if (r.progress) setProgress(r.progress);
       }
       setMsg(failed ? { t: `Gửi lại xong: ${sent} nơi ok, ${failed} nơi lỗi`, k: "err" } : { t: `✓ Đã gửi lại vào ${sent} nhóm`, k: "ok" });
+    } catch (e) {
+      setMsg({ t: (e as Error).message, k: "err" });
+    } finally {
+      setBusy(false);
+      setSending(false);
+    }
+  };
+
+  const sendVideoAgain = async (postIndex: number) => {
+    const post = posts[postIndex];
+    if (!scanId || busy || !post?.destinationNames.length) return;
+    setBusy(true);
+    setSending(true);
+    try {
+      let sent = 0;
+      let failed = 0;
+      for (const destinationKeyword of post.destinationNames) {
+        const r = (await api.control({ action: "forwardSel", scanId, indexes: [postIndex], destinationKeyword, videoOnly: true })) as { ok: true; sent: number; failed?: number; posts?: ScanPost[]; progress?: ScanProgress | null };
+        sent += r.sent;
+        failed += r.failed || 0;
+        if (r.posts) setPosts(r.posts);
+        if (r.progress) setProgress(r.progress);
+      }
+      setMsg(failed ? { t: `Gửi lại video: ${sent} nơi ok, ${failed} nơi lỗi`, k: "err" } : { t: `✓ Đã gửi lại video vào ${sent} nhóm (không gửi lại ảnh)`, k: "ok" });
     } catch (e) {
       setMsg({ t: (e as Error).message, k: "err" });
     } finally {
@@ -525,6 +548,14 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
                         {p.photoUrls.length > 3 && <span className="photo-more">+{p.photoUrls.length - 3}</span>}
                       </div>
                     ) : p.photos ? `🖼 ${p.photos}` : "—"}
+                    {p.videoStatus === "failed" && (
+                      <div className="hint" style={{ marginTop: 4, fontSize: 11 }}>
+                        Đã gửi {p.sentImages ?? p.photos ?? 0} ảnh, video lỗi
+                        <button className="mini" type="button" disabled={busy} onClick={() => sendVideoAgain(i)} style={{ marginTop: 4 }}>
+                          Gửi lại video
+                        </button>
+                      </div>
+                    )}
                   </td>
                   <td style={{ fontSize: 13 }}>
                     {p.price ? `${p.price}tr` : ""}

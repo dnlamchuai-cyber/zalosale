@@ -251,8 +251,7 @@ describe("ScanReviewPanel", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: "Dừng sau cụm hiện tại" })).not.toBeInTheDocument());
   });
 
-  it("tin đã gửi ở lại bảng, nút Gửi lại gửi force", async () => {
-    const post = {
+  it("tin đã gửi ở lại bảng, nút Gửi lại gửi force", async () => {    const post = {
       id: "post-sent", tid: "source", name: "Kho phòng", clean: "Mã SENT01",
       areaName: "cau giay", destinationNames: ["cau giay"], kw: "cau giay",
       photos: 0, photoUrls: [], price: null, commissionPercent: null, inPriceRange: true,
@@ -270,6 +269,28 @@ describe("ScanReviewPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "↻ Gửi lại" }));
     await waitFor(() => expect(control).toHaveBeenCalledWith(
       expect.objectContaining({ action: "forwardSel", scanId: "scan-sent", indexes: [0], force: true }),
+    ));
+  });
+
+  it("video lỗi hiện số ảnh đã gửi và nút gửi lại riêng video", async () => {
+    const post = {
+      id: "post-video", tid: "source", name: "Kho phòng", clean: "Mã VID01",
+      areaName: "cau giay", destinationNames: ["cau giay"], kw: "cau giay",
+      photos: 19, photoUrls: ["http://x/1.jpg"], price: null, commissionPercent: null, inPriceRange: true,
+      ts: Date.now(), clusterItems: [], status: "sent" as const,
+      videoStatus: "failed" as const, sentImages: 19,
+    };
+    control
+      .mockResolvedValueOnce({ ok: true, scan: null })
+      .mockResolvedValueOnce({ ok: true, scanId: "scan-vid", range: "05/09/2026", groups: 1, total: 1, added: 1, posts: [post] })
+      .mockResolvedValueOnce({ ok: true, sent: 1 });
+    render(<ScanReviewPanel defaultDays={1} />);
+    fireEvent.click(screen.getByRole("button", { name: "🔍 Quét tin" }));
+    await screen.findByText("Mã VID01");
+    expect(screen.getByText(/Đã gửi 19 ảnh, video lỗi/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Gửi lại video" }));
+    await waitFor(() => expect(control).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "forwardSel", scanId: "scan-vid", indexes: [0], videoOnly: true }),
     ));
   });
 });

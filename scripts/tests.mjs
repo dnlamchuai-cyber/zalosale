@@ -1601,6 +1601,30 @@ const skipVideoResult = await skipVideoForwarder.forwardPayload({
 });
 assertEq("video tải lỗi vẫn gửi được chữ", skipVideoResult.sent, true);
 assertEq("video tải lỗi vẫn hoàn tất đích", skipVideoResult.destinations, 1);
+const videoOnlyApi = makeApi();
+videoOnlyApi.sendMessage = async (message, threadId, type) => {
+  videoOnlyApi._sent.push({ message, threadId, type });
+};
+const videoOnlyForwarder = new Forwarder(videoOnlyApi, parseConfig({
+  sourceGroups: ["video-source"],
+  areas: [{ id: "video-destination", matchAll: true }],
+  forward: { sendDelayMs: 0, retries: 0 },
+}), () => {});
+videoOnlyForwarder.download = async (_url, mediaType) => {
+  const filePath = path.join(os.tmpdir(), `zalosale-videoonly-${Date.now()}.${mediaType === "video" ? "mp4" : "jpg"}`);
+  fs.writeFileSync(filePath, mediaType);
+  return filePath;
+};
+const videoOnlyResult = await videoOnlyForwarder.forwardPayload({
+  threadId: "video-source",
+  items: [{ data: { content: "Địa chỉ: Hà Đông" } }, videoItem],
+  source: "manual",
+  videoOnly: true,
+});
+assertEq("gửi lại riêng video thành công", videoOnlyResult.sent, true);
+assertEq("video-only báo trạng thái video sent", videoOnlyResult.videoStatus, "sent");
+assertEq("video-only chỉ gửi 1 tin video", videoOnlyApi._sent.length, 1);
+assertEq("video-only không gửi chữ/ảnh", typeof videoOnlyApi._sent[0]?.message === "object", true);
 
 const mixedMediaApi = makeApi();
 const mixedNativeVideos = [];

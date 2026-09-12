@@ -121,6 +121,8 @@ export interface ScanPost {
   inPriceRange: boolean;
   status?: "pending" | "sent" | "duplicate" | "error" | "undetermined";
   duplicateOf?: string;
+  videoStatus?: "pending" | "sent" | "failed" | null;
+  sentImages?: number;
   routingReason?: "dia-chi" | "gan" | "xe-buyt" | null;
   routingKeys?: string[];
   matchedRules?: Array<{ name: string; type: string }>;
