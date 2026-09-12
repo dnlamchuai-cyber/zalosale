@@ -1,10 +1,26 @@
 import { logger } from "./logger.js";
-import { loadConfig } from "./config.js";
+import { CLOSING_STICKER_PATH, SCAN_STATE_PATH, loadConfig } from "./config.js";
 import { login, logoutLocal } from "./session.js";
 import { Batcher } from "./batcher.js";
 import { Forwarder } from "./forwarder.js";
 import { startBot } from "./listener.js";
 import { ApiServer } from "./server-api.js";
+import { createSentMessageIndex } from "./features/sent-message-index/service.js";
+import { ClosingStickerStore } from "./closing-sticker.js";
+import { buildingKeyFromText } from "./full-building.js";
+import { isLiveBatchStillPresent } from "./live-batch-verification.js";
+import { loadRulesCached } from "./features/location-rules/repository.js";
+
+// WHY: live batcher chụp kho rule lúc khởi động; rule mới lưu cần restart bot (quét tay nhận ngay).
+function loadRulesSnapshot() {
+  try {
+    return loadRulesCached().rules;
+  } catch {
+    return [];
+  }
+}
+
+const AUTO_FORWARD_DELAY_MS = 30 * 60 * 1000;
 
 async function startRuntime(server, state, config) {
   let api;
@@ -19,26 +35,77 @@ async function startRuntime(server, state, config) {
   }
   server.broadcast("login", { ok: true });
 
-  const forwarder = new Forwarder(api, config, () => {
-    state.status.forwarded += 1;
-  });
-  const batcher = new Batcher(config.forward);
+  const closingStickerStore = new ClosingStickerStore(CLOSING_STICKER_PATH);
+  const forwarder = new Forwarder(
+    api,
+    config,
+    () => { state.status.forwarded += 1; },
+    async (delivery) => {
+      const sourceName = state.status.knownSources
+        .find((source) => String(source.threadId) === delivery.sourceGroupId)?.name || "";
+      state.sentMessageIndex.recordBotDelivery({
+        ...delivery,
+        sourceGroup: { id: delivery.sourceGroupId, name: sourceName },
+      });
+    },
+    async ({ destinationId, content }) => state.sentMessageIndex.hasSent({ destinationId, content }),
+    closingStickerStore,
+  );
+  const batcher = new Batcher({ ...config.forward, areas: config.areas, defaultArea: config.defaultArea, rules: loadRulesSnapshot() });
 
-  batcher.on("batch", async ({ threadId, items }) => {
+  batcher.on("building-full", (notice) => {
+    forwarder.markBuildingFull(notice.threadId, notice);
+    logger.info(`Đã đánh dấu full tòa ${notice.label} ở nhóm nguồn ${notice.threadId}`);
+  });
+
+  batcher.on("batch", async ({ threadId, items, ...batchMeta }) => {
     // luôn lưu realtime để quét lại được kể cả khi đang manual
     try {
       const { appendBatch } = await import("./store.js");
       const name = state.status.knownSources.find((s) => String(s.threadId) === String(threadId))?.name || String(threadId);
-      appendBatch(threadId, items, name);
+      appendBatch(threadId, items, name, batchMeta);
     } catch {}
     if (state.status.mode === "manual") {
       logger.info(`Đã lưu ${items.length} tin vào store (chế độ thủ công — chờ bạn Quét & chọn)`);
       return;
     }
-    forwarder.enqueue({ threadId, items, source: "live" });
+    const queuedAt = Date.now();
+    logger.info(`Đã xếp bài auto vào hàng chờ 30 phút: ${threadId}`);
+    forwarder.enqueue({
+      threadId,
+      items,
+      source: "live",
+      ...batchMeta,
+      notBefore: queuedAt + AUTO_FORWARD_DELAY_MS,
+      beforeSend: async () => {
+        if (state.status.mode !== "auto") {
+          logger.info(`Bỏ qua bài auto đang chờ ở nhóm ${threadId}: bot đã chuyển sang manual`);
+          return false;
+        }
+        const batchText = items
+          .filter((item) => typeof item?.data?.content === "string")
+          .map((item) => item.data.content)
+          .join("\n\n");
+        const requireName = buildingKeyFromText(batchText) === String(batchMeta.buildingKey || "").toLowerCase();
+        if (forwarder.isBuildingFull(threadId, batchMeta.buildingKey, batchText, { requireName })) {
+          logger.info(`Bỏ qua bài auto thuộc tòa đã full ở nhóm ${threadId}`);
+          return false;
+        }
+        return isLiveBatchStillPresent(api, threadId, items);
+      },
+    });
   });
 
-  const bot = startBot({ api, config, batcher, forwarder, status: state.status });
+  const bot = startBot({
+    api,
+    config,
+    batcher,
+    forwarder,
+    status: state.status,
+    scanStatePath: SCAN_STATE_PATH,
+    closingStickerStore,
+    wasSourceContentSent: async ({ sourceId, content }) => state.sentMessageIndex.hasSourceSent({ sourceId, content }),
+  });
   state.bot = bot;
   state.api = api;
   server.broadcast("ready", true);
@@ -86,6 +153,15 @@ function createRelogin(server, state, config) {
 
 async function main() {
   const config = loadConfig();
+  const sentMessageIndex = createSentMessageIndex();
+  // Seed kho địa danh lần đầu (seed + alias phường); lần sau giữ nguyên.
+  try {
+    const { ensureSeeded } = await import("./features/location-rules/service.js");
+    const seeded = ensureSeeded(config.areas);
+    logger.info(`Kho địa danh: ${seeded.rules.length} rule (nguồn: ${seeded.source})`);
+  } catch (e) {
+    logger.warn(`Không seed được kho địa danh: ${e.message}`);
+  }
   logger.info(`zaloSALE khởi động — mode: ${config.mode}`);
 
   const status = {
@@ -94,7 +170,7 @@ async function main() {
     mode: config.mode,
     knownSources: [],
   };
-  const state = { config, status, bot: null, api: null, accountInfo: null };
+  const state = { config, status, bot: null, api: null, accountInfo: null, sentMessageIndex };
 
   const server = new ApiServer({ port: config.ui?.port ?? 3000, ctx: () => state });
   await server.start();
@@ -130,6 +206,7 @@ async function main() {
     } catch {
       // bỏ qua
     }
+    sentMessageIndex.close();
     logger.info("Đã tắt bot. Hẹn gặp lại!");
     process.exit(0);
   };

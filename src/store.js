@@ -13,15 +13,37 @@ function ensureDir() {
   } catch {}
 }
 
+function safeMetadata(metadata) {
+  if (!metadata || typeof metadata !== "object") return null;
+  const inheritedDestinations = Array.isArray(metadata.inheritedDestinations)
+    ? metadata.inheritedDestinations.slice(0, 20).map((area) => ({
+      id: area?.id == null ? undefined : String(area.id),
+      groupLink: area?.groupLink == null ? undefined : String(area.groupLink),
+    }))
+    : [];
+  return {
+    segmentType: String(metadata.segmentType || "generic"),
+    buildingContextId: metadata.buildingContextId == null ? null : String(metadata.buildingContextId),
+    sequence: Number(metadata.sequence) || 0,
+    inheritedDestinations,
+  };
+}
+
 /**
  * Ghi 1 batch (1 bài đăng đã gom) vào file.
  * Mỗi dòng là 1 JSON: { ts, threadId, threadName, items }
  */
-export function appendBatch(threadId, items, threadName = "") {
+export function appendBatch(threadId, items, threadName = "", metadata = items?.batchMeta ?? null) {
   if (!Array.isArray(items) || !items.length) return;
   ensureDir();
   const ts = Number(items[0]?.data?.ts || items[0]?.ts || Date.now());
-  const line = JSON.stringify({ ts, threadId: String(threadId), threadName: String(threadName || ""), items });
+  const line = JSON.stringify({
+    ts,
+    threadId: String(threadId),
+    threadName: String(threadName || ""),
+    items,
+    metadata: safeMetadata(metadata),
+  });
   try {
     fs.appendFileSync(STORE_PATH, line + "\n", "utf8");
   } catch {}
@@ -75,7 +97,12 @@ export function query({ fromMs = 0, toMs = Date.now(), sourceIds = [], keyword =
         const norm = text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d");
         if (!norm.includes(kw)) continue;
       }
-      if (Array.isArray(rec.items) && rec.items.length) out.push(rec.items);
+      if (Array.isArray(rec.items) && rec.items.length) {
+        if (rec.metadata && typeof rec.metadata === "object") {
+          Object.defineProperty(rec.items, "batchMeta", { value: rec.metadata, enumerable: false });
+        }
+        out.push(rec.items);
+      }
     }
   } catch {}
   return out;

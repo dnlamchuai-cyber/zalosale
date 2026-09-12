@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import qrcode from "qrcode-terminal";
 import { Zalo } from "zca-js";
+import { imageMetadataGetter } from "./image-metadata.js";
 import { logger } from "./logger.js";
 import { SESSION_DIR } from "./config.js";
 
@@ -9,6 +10,24 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const CREDENTIAL_FILE = path.join(SESSION_DIR, "credential.json");
 const QR_FILE = path.join(SESSION_DIR, "qr-login.png");
+const ZALO_REQUEST_TIMEOUT_MS = 30_000; // Tránh một album lỗi giữ cả hàng đợi trong nhiều phút.
+
+export async function fetchWithTimeout(url, options = {}, fetchImpl = fetch, timeoutMs = ZALO_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  options.signal?.addEventListener("abort", cancel, { once: true });
+  const timer = setTimeout(cancel, timeoutMs);
+  try {
+    return await fetchImpl(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", cancel);
+  }
+}
+
+function createZaloClient() {
+  return new Zalo({ imageMetadataGetter, polyfill: fetchWithTimeout });
+}
 
 // LoginQRCallbackEventType của zca-js 2.1.2
 const EVT = { QRCodeGenerated: 0, QRCodeExpired: 1, QRCodeScanned: 2, QRCodeDeclined: 3, GotLoginInfo: 4 };
@@ -97,7 +116,7 @@ async function tryLoginWithCred(creds, tries = 10) {
   let lastErr = null;
   for (let attempt = 0; attempt < tries; attempt++) {
     try {
-      const zalo = new Zalo();
+      const zalo = createZaloClient();
       const api = await zalo.login(creds);
       logger.info("Đăng nhập lại bằng phiên đã lưu — thành công");
       return { api, zalo };
@@ -149,7 +168,7 @@ export async function login(onQr = null, onScan = null) {
   // 2) Chưa có phiên → quét QR. Nếu ảnh quét xong mà kết nối lỗi mạng thì tự dùng phiên vừa lưu thử lại.
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      const zalo = new Zalo();
+      const zalo = createZaloClient();
       const api = await zalo.loginQR({}, (evt) => {
         switch (evt.type) {
           case EVT.QRCodeGenerated:

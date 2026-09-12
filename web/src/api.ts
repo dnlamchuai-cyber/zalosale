@@ -1,6 +1,61 @@
-import type { AppConfig, GroupInfo, LogEntry, ScanPost, StatusData } from "./types";
+import type { AppConfig, GroupInfo, LogEntry, ScanPost, SentRoomSummary, StatusData } from "./types";
 
 const BASE = "";
+const GROUPS_CACHE_KEY = "zalo-sale.groups-cache";
+// WHY: Metadata nhóm phải có ngay qua các lần mở web; "Quét mới" là điểm làm mới rõ ràng.
+type GroupsResponse = { ok: true; groups: GroupInfo[] };
+let groupsRequest: Promise<GroupsResponse> | null = null;
+
+function groupMetadata(value: unknown): GroupInfo | null {
+  if (!value || typeof value !== "object") return null;
+  const group = value as Record<string, unknown>;
+  if ((typeof group.id !== "string" && typeof group.id !== "number") || !String(group.id).trim() || typeof group.name !== "string" || !group.name.trim()) return null;
+
+  return {
+    id: String(group.id),
+    name: group.name,
+    ...(typeof group.avt === "string" && group.avt ? { avt: group.avt } : {}),
+    ...(typeof group.avatar === "string" && group.avatar ? { avatar: group.avatar } : {}),
+    ...(typeof group.type === "number" ? { type: group.type } : {}),
+    ...(typeof group.subType === "number" ? { subType: group.subType } : {}),
+    ...(group.isOwner === true ? { isOwner: true } : {}),
+    ...(group.isAdmin === true ? { isAdmin: true } : {}),
+    ...(group.isManager === true ? { isManager: true } : {}),
+    ...(typeof group.totalMember === "number" ? { totalMember: group.totalMember } : {}),
+  };
+}
+
+function groupMetadataList(groups: unknown[]): GroupInfo[] {
+  return groups.map(groupMetadata).filter((group): group is GroupInfo => group !== null);
+}
+
+function cachedGroups(): GroupsResponse | null {
+  try {
+    const raw = localStorage.getItem(GROUPS_CACHE_KEY);
+    if (!raw) return null;
+    const cache = JSON.parse(raw);
+    if (!Array.isArray(cache.groups)) return null;
+    const groups = groupMetadataList(cache.groups);
+    return groups.length ? { ok: true, groups } : null;
+  } catch {
+    return null;
+  }
+}
+
+// AI: Codex | WHY: Panels need cached group metadata before their first render to avoid avatar flicker.
+// SPEC: user request to retain source/destination group thumbnails on 2026-09-06
+export function readCachedGroups(): GroupInfo[] {
+  return cachedGroups()?.groups || [];
+}
+
+function saveGroups(groups: GroupInfo[]) {
+  try {
+    const metadata = groupMetadataList(groups);
+    if (metadata.length) localStorage.setItem(GROUPS_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), groups: metadata }));
+  } catch {
+    // Cache chỉ giúp nhanh hơn; không được làm hỏng luồng chính khi trình duyệt chặn storage.
+  }
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(BASE + path, options);
@@ -18,10 +73,28 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cfg),
     }),
-  groups: (force = false) =>
-    request<{ ok: true; groups: GroupInfo[] }>(`/api/groups${force ? "?force=1" : ""}`),
+  groups: async (force = false): Promise<GroupsResponse> => {
+    const cache = !force ? cachedGroups() : null;
+    if (cache) return cache;
+    if (!force && groupsRequest) return groupsRequest;
+
+    const requestGroups = async () => {
+      const response = await request<GroupsResponse>(`/api/groups${force ? "?force=1" : ""}`);
+      saveGroups(response.groups || []);
+      return response;
+    };
+
+    if (force) return requestGroups();
+    groupsRequest = requestGroups().finally(() => { groupsRequest = null; });
+    return groupsRequest;
+  },
   logs: () => request<{ ok: true; logs: LogEntry[] }>("/api/logs"),
   qr: () => request<{ ok: true; qr: string | null; loggedIn: boolean }>("/api/qr"),
+  sentRooms: (query = "", limit = 20) =>
+    request<{ ok: true; rooms: SentRoomSummary[] }>(`/api/sent-rooms?q=${encodeURIComponent(query)}&limit=${limit}`),
+  clearSentRooms: () => request<{ ok: true; clearedRooms: number }>("/api/sent-rooms/clear", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmation: "CLEAR_SENT_ROOMS" }),
+  }),
   control: (body: Record<string, unknown>) =>
     request<Record<string, unknown>>("/api/control", {
       method: "POST",

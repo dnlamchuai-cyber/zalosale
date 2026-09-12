@@ -18,6 +18,7 @@ coverage/
 # Zalo runtime data — session credentials, group metadata, and message history
 config/config.json
 config/groups-cache.json
+config/closing-sticker.json
 config/session/
 data/
 logs/

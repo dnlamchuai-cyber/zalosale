@@ -4,9 +4,10 @@
 
 import { z } from "zod";
 import { resolveRange } from "../../history.js";
-import { isExcluded, normalizeText, cleanText } from "../../processor.js";
-import { classifyArea } from "../../classifier.js";
+import { isExcluded, normalizeText, cleanText, isInPriceRange, parseCommissionPercent, parsePrice } from "../../processor.js";
+import { classifyAreas } from "../../classifier.js";
 import { fetchRecentMessages } from "../../history.js";
+import { extractPhotoUrls } from "../../media.js";
 
 const MAX_DAYS = 60; // WHY: SPEC BR1 - max 60 ngày để tránh quá tải 1500 tin
 const DEFAULT_COUNT = 500; // WHY: đủ cho 3 ngày, ít hơn 1500 để nhanh
@@ -25,6 +26,7 @@ export async function checkCommunity(input, deps) {
   if (range.error) throw new Error(range.error);
 
   const areas = deps.areas ?? [];
+  const filter = deps.filter ?? {};
   const fetchFn = deps.fetchFn ?? fetchRecentMessages;
   const batches = await fetchFn(deps.api, parsed.groupId, {
     fromMs: range.fromMs,
@@ -38,24 +40,34 @@ export async function checkCommunity(input, deps) {
 
   for (const items of batches) {
     const text = items.map((it) => (typeof it.data?.content === "string" ? it.data.content : "")).join("\n\n");
-    if (isExcluded(text, [])) continue;
+    if (isExcluded(text, deps.excludeKeywords ?? [])) continue;
+    if (!isInPriceRange(text, deps.priceRange)) continue;
     if (kwNorm && !normalizeText(text).includes(kwNorm)) continue;
 
-    const clean = cleanText(text, { deleteLines: [], removePercentLines: false, removePriceLines: false });
-    const photos = items.filter((it) => it.data?.content?.startsWith?.("{") || it.data?.originUrl).length;
+    const clean = cleanText(text, {
+      deleteLines: deps.deleteLines ?? [],
+      removePercentLines: filter.removePercentLines ?? false,
+      removePriceLines: filter.removePriceLines ?? false,
+    });
+    const photoUrls = extractPhotoUrls(items);
+    const photos = photoUrls.length;
     if (!clean && photos === 0) continue;
 
-    const area = classifyArea(text, areas, null);
+    const destinations = classifyAreas(text, areas, deps.defaultArea ?? null);
+    const price = parsePrice(text);
     const ts = Number(items[0]?.data?.ts || 0);
 
     posts.push({
       id: `${parsed.groupId}:${idx++}`,
       ts,
       clean: clean.slice(0, 400),
-      areaName: area?.keywords?.[0] ?? null,
-      kw: area ? (area.keywords || []).join(", ") : "",
+      areaName: destinations[0]?.keywords?.[0] ?? null,
+      destinationNames: destinations.map((destination) => destination.keywords?.[0] || "?"),
+      kw: destinations.flatMap((destination) => destination.keywords || []).join(", "),
       photos,
-      price: null,
+      photoUrls,
+      price: price?.first ?? null,
+      commissionPercent: parseCommissionPercent(text),
     });
   }
 

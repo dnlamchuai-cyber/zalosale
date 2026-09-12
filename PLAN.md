@@ -56,3 +56,6 @@ Bot Zalo tự động chuyển tiếp tin đăng phòng từ **nhóm nguồn (nh
 - [x] Sửa bug: `listGroups` thiếu trong object return của `startBot` → web không tải được danh sách nhóm
 - [x] Xác minh `getAllGroups` + `getGroupInfo` hoạt động (300 nhóm, không lỗi)
 - [ ] (chờ verify thật) Forward thật trên nhóm Zalo sau khi rebuild giao diện
+
+### 2026-09-06
+- [ ] CRM khách hàng trong app: trạng thái chăm sóc, nhu cầu phòng, form bắn khách theo nhóm sale, chặn forward khi giữ chỗ, và sao chép địa chỉ để tìm tin Zalo. Trạng thái: DRAFT — chờ duyệt BIZ-003/SPEC-004.

@@ -1,4 +1,7 @@
 import { logger } from "./logger.js";
+import { Batcher } from "./batcher.js";
+import { buildingNoticeMatchesText } from "./full-building.js";
+import { loadRulesCached } from "./features/location-rules/repository.js";
 
 function tsOf(msg) {
   const d = msg?.data ?? msg ?? {};
@@ -50,7 +53,7 @@ export function resolveRange({ days, from, to } = {}) {
   if (typeof days === "number" && Number.isFinite(days)) {
     if (days <= 0) return { error: `Số ngày phải lớn hơn 0 (nhận: ${days})` };
     if (days > 60) return { error: `Số ngày quá dài (${days}). Tối đa 60 ngày.` };
-    const fromMs = startOfDay(now.getTime() - days * 86400000);
+    const fromMs = startOfDay(now.getTime() - (days - 1) * 86400000);
     const toMs = endOfDay(now);
     return {
       fromMs,
@@ -90,9 +93,13 @@ export async function fetchRecentMessages(
     toMs = Date.now(),
     gapMs = 10000,
     maxBatchItems = 10,
+    maxWaitMs = 120000,
+    areas = [],
+    defaultArea = null,
     count = 1500,
     communityFetch,
     storeQuery,
+    rules = [],
   } = {}
 ) {
   if (!isFinite(fromMs)) throw new Error("Thiếu fromMs (mốc thời gian bắt đầu)");
@@ -122,8 +129,11 @@ export async function fetchRecentMessages(
           let query = storeQuery;
           if (!query) ({ query } = await import("./store.js"));
           const batches = query({ fromMs, toMs, sourceIds: [String(threadId)] });
-          logger.info(`Đọc từ store: ${batches.length} bài trong khoảng (fallback)`);
-          return batches;
+          if (batches.length) {
+            logger.info(`Đọc từ store: ${batches.length} bài trong khoảng (fallback)`);
+            return batches;
+          }
+          logger.warn("Store fallback không có dữ liệu — giữ lỗi Community gốc");
         } catch (e3) {
           logger.warn(`Đọc store cũng lỗi: ${e3.message}`);
         }
@@ -137,8 +147,11 @@ export async function fetchRecentMessages(
         try {
           const { query } = await import("./store.js");
           const batches = query({ fromMs, toMs, sourceIds: [String(threadId)] });
-          logger.info(`Đọc từ store: ${batches.length} bài trong khoảng (fallback)`);
-          return batches;
+          if (batches.length) {
+            logger.info(`Đọc từ store: ${batches.length} bài trong khoảng (fallback)`);
+            return batches;
+          }
+          logger.warn("Store fallback không có dữ liệu — giữ lỗi adapter gốc");
         } catch (e2) {
           logger.warn(`Đọc store cũng lỗi: ${e2.message}`);
         }
@@ -157,16 +170,39 @@ export async function fetchRecentMessages(
     `Quét lịch sử: nhận ${items.length} tin, trong khoảng ${inRange.length} tin` +
       (reachedEnd ? "" : ` (⚠️ hết giới hạn ${count} tin, có thể thiếu tin cũ)`)
   );
-  return groupIntoBatches(inRange.reverse(), gapMs, maxBatchItems);
+  const chronological = inRange
+    .map((message, sourceIndex) => ({ message, sourceIndex }))
+    .sort((left, right) => tsOf(left.message) - tsOf(right.message) || left.sourceIndex - right.sourceIndex)
+    .map(({ message }) => message);
+  return segmentMessages(chronological, {
+    threadId,
+    gapMs,
+    maxBatchItems,
+    maxWaitMs,
+    areas,
+    defaultArea,
+    rules,
+  });
 }
 
 /** Quét + gom bài đăng theo cấu hình forward của bot (dùng chung cho preview và forward) */
 export function fetchRecentBatches(api, threadId, range, config) {
+  // WHY: quét lịch sử thấy toàn cảnh — chùm ảnh 10-20 tin không được xả sớm làm
+  // vỡ cụm phòng trước khi tin mở cụm tới (SPEC-005 roomPrefix). Live vẫn giữ cap nhỏ.
+  const historyBatchCap = Math.max(Number(config.forward.maxBatchItems) || 10, 30);
+  let rules = [];
+  try {
+    rules = loadRulesCached().rules;
+  } catch {}
   return fetchRecentMessages(api, threadId, {
     fromMs: range.fromMs,
     toMs: range.toMs,
     gapMs: config.forward.historyGapMs,
-    maxBatchItems: config.forward.maxBatchItems,
+    maxBatchItems: historyBatchCap,
+    maxWaitMs: config.forward.maxWaitMs,
+    areas: config.areas,
+    defaultArea: config.defaultArea,
+    rules,
   });
 }
 
@@ -184,21 +220,118 @@ export async function scanGroupRange(api, threadId, range, forwarder, config) {
   return count;
 }
 
-function groupIntoBatches(messages, gapMs, maxBatchItems) {
-  const batches = [];
-  let cur = [];
-  let prevTs = null;
+function batchHasText(items) {
+  return (items || []).some((it) => typeof it?.data?.content === "string" && it.data.content.trim());
+}
 
-  for (const m of messages) {
-    const t = tsOf(m);
-    const cut = cur.length && (prevTs === null || t - prevTs > gapMs || t - prevTs < -5000);
-    if (cut || cur.length >= maxBatchItems) {
-      if (cur.length) batches.push(cur);
-      cur = [];
+function quoteCliId(item) {
+  const q = item?.data?.quote;
+  if (!q || typeof q !== "object") return "";
+  return String(q.cliMsgId || "");
+}
+
+/**
+ * Gắn chùm chỉ-có-ảnh mồ côi sau khi tách cụm (chỉ trong cùng run thời gian):
+ * (a) tin mở reply trỏ ảnh nào → gộp ảnh đó vào cụm mở (tin mở đứng đầu);
+ * (b) ảnh lẻ cuối run, sau cụm có chữ → gộp vào cụm chữ trước nó.
+ * Không gộp khi có cụm chữ khác đứng sau trong run (thuộc về cụm sau, tránh gửi nhầm).
+ */
+export function attachOrphanPhotoBatches(batches, runBounds) {
+  const runOf = (i) => {
+    for (let r = 0; r < runBounds.length - 1; r++) {
+      if (i >= runBounds[r] && i < runBounds[r + 1]) return r;
     }
-    cur.push(m);
+    return -1;
+  };
+  const consumed = new Set();
+  // (a) reply-quote: ảnh được tin mở sau quote thì về cụm mở đó.
+  const photoIdxByCli = new Map();
+  batches.forEach((b, i) => {
+    if (batchHasText(b)) return;
+    for (const it of b) {
+      const c = it?.data?.cliMsgId;
+      if (c) photoIdxByCli.set(String(c), i);
+    }
+  });
+  batches.forEach((b, j) => {
+    for (const it of b) {
+      const pi = photoIdxByCli.get(quoteCliId(it));
+      if (pi === undefined || pi === j || consumed.has(pi)) continue;
+      if (!quoteCliId(it) || runOf(pi) !== runOf(j)) continue;
+      // Giữ tin mở đứng đầu, ảnh quote chèn ngay sau nó.
+      const hostTextIdx = b.findIndex((x) => typeof x?.data?.content === "string" && x.data.content.trim());
+      if (hostTextIdx < 0) continue;
+      b.splice(hostTextIdx + 1, 0, ...batches[pi]);
+      consumed.add(pi);
+    }
+  });
+  // (b) ảnh lẻ cuối run: gộp vào cụm có chữ gần nhất phía trước trong run.
+  for (let i = 0; i < batches.length; i++) {
+    if (consumed.has(i) || batchHasText(batches[i])) continue;
+    if (runOf(i) < 0) continue;
+    let hasTextAfter = false;
+    for (let j = i + 1; j < batches.length && runOf(j) === runOf(i); j++) {
+      if (!consumed.has(j) && batchHasText(batches[j])) {
+        hasTextAfter = true;
+        break;
+      }
+    }
+    if (hasTextAfter) continue;
+    let host = -1;
+    for (let j = i - 1; j >= 0 && runOf(j) === runOf(i); j--) {
+      if (consumed.has(j)) continue;
+      if (batchHasText(batches[j])) {
+        host = j;
+        break;
+      }
+    }
+    if (host < 0) continue;
+    batches[host].push(...batches[i]);
+    consumed.add(i);
+  }
+  return batches.filter((_, i) => !consumed.has(i));
+}
+
+export function segmentMessages(
+  messages,
+  { threadId = "history", gapMs = 10000, maxBatchItems = 10, maxWaitMs = 120000, areas = [], defaultArea = null, rules = [] } = {}
+) {
+  const batches = [];
+  const batcher = new Batcher({
+    windowMs: gapMs,
+    maxBatchItems,
+    maxWaitMs,
+    areas,
+    defaultArea,
+    rules,
+  });
+  batcher.on("batch", ({ items }) => batches.push(items));
+  let prevTs = null;
+  const effectiveGap = Math.max(gapMs, maxWaitMs);
+  const runBounds = [0];
+  for (const message of messages) {
+    const t = tsOf(message);
+    const delta = prevTs === null ? 0 : t - prevTs;
+    if (prevTs !== null && (delta >= effectiveGap || delta < -5000)) {
+      batcher.flush(threadId);
+      runBounds.push(batches.length);
+    }
+    batcher.add(threadId, message);
     prevTs = t;
   }
-  if (cur.length) batches.push(cur);
-  return batches;
+  batcher.flushAll();
+  runBounds.push(batches.length);
+  const merged = attachOrphanPhotoBatches(batches, runBounds);
+  const activeBatches = merged.filter((items) => {
+    const text = items
+      .filter((item) => typeof item?.data?.content === "string")
+      .map((item) => item.data.content)
+      .join("\n\n");
+    return !batcher.isBuildingFull(threadId, items.batchMeta?.buildingKey, text);
+  });
+  Object.defineProperty(activeBatches, "fullBuildingNotices", {
+    value: batcher.fullBuildingNotices,
+    enumerable: false,
+  });
+  return activeBatches;
 }

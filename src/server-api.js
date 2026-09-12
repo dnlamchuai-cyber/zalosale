@@ -5,6 +5,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { logger } from "./logger.js";
 import { saveConfig } from "./config.js";
+import { locationRulesRoutes } from "./features/location-rules/route.js";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -75,7 +76,7 @@ export class ApiServer {
       try {
         const parsed = saveConfig(req.body || {});
         ctx().config = parsed;
-        ctx().bot?.refresh?.();
+        ctx().bot?.refresh?.(parsed);
         this.broadcast("config", { config: parsed });
         res.json({ ok: true, config: parsed });
       } catch (e) {
@@ -92,16 +93,37 @@ export class ApiServer {
     this.app.get("/api/logs", (req, res) => res.json({ ok: true, logs: this.logBuffer }));
     this.app.get("/api/qr", (req, res) => res.json({ ok: true, qr: this.latestQr, loggedIn: this.loggedIn }));
 
-    this.app.post("/api/community/check", async (req, res) => {
-      const { bot, config, api } = ctx();
+    this.app.get("/api/sent-rooms", async (req, res) => {
+      const { sentMessageIndex } = ctx();
+      if (!sentMessageIndex) return res.status(503).json({ ok: false, error: "Kho tin chưa sẵn sàng" });
+      const { searchSentRoomsRoute } = await import("./features/sent-message-index/route.js");
+      req.sentMessageIndex = sentMessageIndex;
+      return searchSentRoomsRoute(req, res);
+    });
+
+    this.app.post("/api/sent-rooms/clear", async (req, res) => {
+      const { sentMessageIndex } = ctx();
+      if (!sentMessageIndex) return res.status(503).json({ ok: false, error: "Kho tin chưa sẵn sàng" });
+      const { clearSentRoomsRoute } = await import("./features/sent-message-index/route.js");
+      req.sentMessageIndex = sentMessageIndex;
+      return clearSentRoomsRoute(req, res);
+    });
+
+    this.app.post("/api/community/check", async (req, res) => {      const { bot, config, api } = ctx();
       if (!bot) return res.status(409).json({ ok: false, error: "Bot chưa sẵn sàng" });
       const apiInst = api ?? bot.api ?? null;
       if (!apiInst) return res.status(500).json({ ok: false, error: "Không lấy được api" });
       const { communityCheckRoute } = await import("./features/community-check/route.js");
       req.api = apiInst;
-      req.areas = config.areas;
+      req.config = config;
       return communityCheckRoute(req, res);
     });
+
+    try {
+      locationRulesRoutes(this.app, () => ctx().config);
+    } catch (e) {
+      logger.warn(`Không đăng ký được location-rules routes: ${e.message}`);
+    }
 
     // ---- Control ----
     this.app.post("/api/control", async (req, res) => {
@@ -141,19 +163,29 @@ export class ApiServer {
             if (range.error) return res.status(400).json({ ok: false, error: range.error });
             const r = await bot.scanRange(name || "", range, keyword?.trim() || "");
             if (r.error) return res.status(400).json({ ok: false, error: r.error });
-            return res.json({ ok: true, scanId: r.scanId, range: r.range, groups: r.groups, total: r.total, posts: r.posts });
+            return res.json({ ok: true, scanId: r.scanId, range: r.range, groups: r.groups, total: r.total, added: r.added, posts: r.posts, fullBuildings: r.fullBuildings || [] });
+          }
+          case "scanState": {
+            const scan = bot?.scanState?.();
+            return res.json({ ok: true, scan });
+          }
+          case "stopForward": {
+            const stopped = bot?.requestStopAfterCurrent?.() || false;
+            return res.json({ ok: true, stopped, progress: bot?.scanState?.()?.progress || null });
           }
           case "forwardSel": {
             const indexes = Array.isArray(body.indexes) ? body.indexes.map(Number) : [];
             if (!indexes.length) return res.status(400).json({ ok: false, error: "Chưa chọn tin nào" });
-            const r = bot?.forwardSelected ? bot.forwardSelected(String(body.scanId), indexes) : { sent: 0, error: "Bot chưa sẵn sàng" };
+            const destinationKeyword = typeof body.destinationKeyword === "string" ? body.destinationKeyword.trim() : "";
+            if (destinationKeyword.length > 100) return res.status(400).json({ ok: false, error: "Từ khóa nhóm đích tối đa 100 ký tự" });
+            const r = bot?.forwardSelected ? await bot.forwardSelected(String(body.scanId), indexes, destinationKeyword) : { sent: 0, error: "Bot chưa sẵn sàng" };
             if (r.error) return res.status(400).json({ ok: false, error: r.error });
-            return res.json({ ok: true, sent: r.sent });
+            return res.json({ ok: true, sent: r.sent, failed: r.failed || 0, stopped: r.stopped || false, posts: bot?.scanState?.()?.posts || [], progress: bot?.scanState?.()?.progress || null });
           }
           case "forwardAll": {
-            const r = bot?.forwardAll ? bot.forwardAll(String(body.scanId)) : { sent: 0, error: "Bot chưa sẵn sàng" };
+            const r = bot?.forwardAll ? await bot.forwardAll(String(body.scanId)) : { sent: 0, error: "Bot chưa sẵn sàng" };
             if (r.error) return res.status(400).json({ ok: false, error: r.error });
-            return res.json({ ok: true, sent: r.sent });
+            return res.json({ ok: true, sent: r.sent, failed: r.failed || 0, stopped: r.stopped || false, posts: bot?.scanState?.()?.posts || [], progress: bot?.scanState?.()?.progress || null });
           }
           case "refresh":
             bot?.refresh?.();
@@ -181,7 +213,7 @@ export class ApiServer {
         }
       } catch (e) {
         logger.error(`Lỗi /api/control ${action}: ${e.stack}`);
-        return res.status(500).json({ ok: false, error: e.message });
+        return res.status(500).json({ ok: false, error: "Yêu cầu không thể hoàn tất lúc này" });
       }
     });
 

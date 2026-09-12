@@ -11,7 +11,7 @@
     "hết phòng"
   ],
   "filter": {
-    "removePercentLines": false,
+    "removePercentLines": true,
     "removePriceLines": false
   },
   "defaultArea": null,
@@ -22,9 +22,9 @@
   "forward": {
     "windowMs": 3000,
     "maxBatchItems": 10,
-    "maxWaitMs": 30000,
+    "maxWaitMs": 120000,
     "sendDelayMs": 1500,
     "retries": 3,
-    "historyGapMs": 10000
+    "historyGapMs": 120000
   }
 }

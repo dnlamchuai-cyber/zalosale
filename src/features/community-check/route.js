@@ -19,14 +19,19 @@ export async function communityCheckRoute(req, res) {
   try {
     const result = await checkCommunity(parsed, {
       api: req.api,
-      areas: req.areas ?? [],
+      areas: req.config?.areas ?? req.areas ?? [],
+      excludeKeywords: req.config?.excludeKeywords ?? [],
+      deleteLines: req.config?.deleteLines ?? [],
+      filter: req.config?.filter ?? {},
+      defaultArea: req.config?.defaultArea ?? null,
+      priceRange: req.config?.priceRange,
     });
     return res.json({ ok: true, total: result.total, posts: result.posts, range: result.range });
   } catch (e) {
-    const msg = e.message || "Lỗi không xác định";
+    const msg = e instanceof Error ? e.message : "Lỗi không xác định";
     if (msg.includes("Ngày") || msg.includes("groupId") || msg.includes("keyword")) {
       return res.status(400).json({ ok: false, error: msg });
     }
-    return res.status(500).json({ ok: false, error: msg });
+    return res.status(500).json({ ok: false, error: "Không thể kiểm tra Community lúc này" });
   }
 }

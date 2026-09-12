@@ -1,8 +1,12 @@
+// AI: Codex | WHY: Make catch-all routing an explicit choice per destination.
+// SPEC: docs/03_SPEC/SPEC-003.md
 import { useEffect, useMemo, useState } from "react";
-import type { AppConfig, GroupInfo } from "../types";
-import { api } from "../api";
+import type { AppConfig, GroupInfo, SourceGroupContact } from "../types";
+import { api, readCachedGroups } from "../api";
 
 const splitList = (v: string) => v.split(/\r?\n|,/).map((s) => s.trim()).filter(Boolean);
+const CONTACT_LIMIT = 2000;
+const EMPTY_SOURCE_CONTACT: SourceGroupContact = { admins: "", deputies: "", supportGroup: "", note: "" };
 const nameKey = (s: string) =>
   String(s || "")
     .toLowerCase()
@@ -12,6 +16,27 @@ const nameKey = (s: string) =>
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+function configuredGroupKeys(config: AppConfig) {
+  const keys = new Set<string>();
+  for (const source of config.sourceGroups || []) {
+    const value = String(source || "").trim();
+    if (value) keys.add(`id:${value}`);
+    const name = nameKey(value);
+    if (name) keys.add(`name:${name}`);
+  }
+  for (const area of config.areas || []) {
+    for (const value of [area.id, area._threadId]) {
+      const id = String(value || "").trim();
+      if (id) keys.add(`id:${id}`);
+    }
+  }
+  return keys;
+}
+
+function isConfiguredGroup(group: GroupInfo, keys: Set<string>) {
+  return keys.has(`id:${String(group.id)}`) || keys.has(`name:${nameKey(group.name)}`);
+}
 
 function initials(name: string) {
   const k = nameKey(name).split(/\s+/).filter(Boolean);
@@ -39,12 +64,15 @@ export function SourceGroupsPanel({ config, onSave }: { config: AppConfig; onSav
   const [sel, setSel] = useState<Set<number>>(new Set());
   // picker
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [groups, setGroups] = useState<GroupInfo[]>([]);
+  const [groups, setGroups] = useState<GroupInfo[]>(readCachedGroups);
   const [pickerPage, setPickerPage] = useState(0);
   const [pickerSel, setPickerSel] = useState<Set<number>>(new Set());
   const [pickerBusy, setPickerBusy] = useState(false);
   const [search, setSearch] = useState("");
   const [pickerMgr, setPickerMgr] = useState<"all" | "manager" | "owner" | "admin">("all");
+  const [contactSource, setContactSource] = useState<string | null>(null);
+  const [contactDraft, setContactDraft] = useState<SourceGroupContact>(EMPTY_SOURCE_CONTACT);
+  const configuredKeys = useMemo(() => configuredGroupKeys(config), [config]);
 
   const sources = config.sourceGroups || [];
   const pages = Math.max(1, Math.ceil(sources.length / PAGE));
@@ -59,11 +87,9 @@ export function SourceGroupsPanel({ config, onSave }: { config: AppConfig; onSav
   }, [groups]);
 
   const findGroup = (s: string): GroupInfo | undefined => {
-    // nếu là ID (toàn số) thì tìm theo ID
-    if (/^\d+$/.test(s.trim())) {
-      const found = groups.find((g) => String(g.id) === s.trim());
-      if (found) return found;
-    }
+    const savedId = s.trim();
+    const byId = groups.find((g) => String(g.id) === savedId);
+    if (byId) return byId;
     const k = nameKey(s);
     if (groupMap.has(k)) return groupMap.get(k);
     for (const g of groups) {
@@ -114,12 +140,44 @@ export function SourceGroupsPanel({ config, onSave }: { config: AppConfig; onSav
     }
   };
 
+  const openContactEditor = (source: string) => {
+    setContactSource(source);
+    setContactDraft({ ...EMPTY_SOURCE_CONTACT, ...config.sourceGroupContacts?.[source] });
+  };
+
+  const saveContact = async () => {
+    if (!contactSource) return;
+    const contact = Object.fromEntries(Object.entries(contactDraft).map(([key, value]) => [key, value.trim()])) as SourceGroupContact;
+    const contacts = { ...(config.sourceGroupContacts || {}) };
+    if (Object.values(contact).some(Boolean)) contacts[contactSource] = contact;
+    else delete contacts[contactSource];
+    try {
+      await onSave({ ...config, sourceGroupContacts: contacts });
+      setMsg({ t: Object.values(contact).some(Boolean) ? "Đã lưu liên hệ quản lý ✓" : "Đã xoá liên hệ quản lý ✓", k: "ok" });
+    } catch (e) {
+      setMsg({ t: (e as Error).message, k: "err" });
+    }
+  };
+
+  const setContactField = (field: keyof SourceGroupContact, value: string) => {
+    setContactDraft((contact) => ({ ...contact, [field]: value }));
+  };
+
+  useEffect(() => {
+    let mounted = true;
+    void api.groups().then((result) => {
+      if (mounted) setGroups(result.groups || []);
+    }).catch(() => undefined);
+    return () => { mounted = false; };
+  }, []);
+
   const openPicker = async () => {
     setPickerOpen((v) => !v);
     if (!groups.length) await loadGroups(false);
   };
 
-  const baseFiltered = search ? groups.filter((g) => nameKey(g.name).includes(nameKey(search)) || g.id.includes(search)) : groups;
+  const availableGroups = groups.filter((g) => !isConfiguredGroup(g, configuredKeys));
+  const baseFiltered = search ? availableGroups.filter((g) => nameKey(g.name).includes(nameKey(search)) || g.id.includes(search)) : availableGroups;
   const filtered = baseFiltered.filter((g) => {
     if (pickerMgr === "manager") return !!(g as any).isManager;
     if (pickerMgr === "owner") return !!(g as any).isOwner;
@@ -171,7 +229,7 @@ export function SourceGroupsPanel({ config, onSave }: { config: AppConfig; onSav
       </div>
 
       {pickerOpen && (
-        <div style={{ marginTop: 14, border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "#fbfcfe" }}>
+        <div role="region" aria-label="Danh sách nhóm chưa được cấu hình" style={{ marginTop: 14, border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "#fbfcfe" }}>
           <div className="row" style={{ marginBottom: 10 }}>
             <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm nhóm..." style={{ flex: 1 }} />
             <select value={pickerMgr} onChange={(e) => setPickerMgr(e.target.value as any)} style={{ maxWidth: 150 }}>
@@ -192,7 +250,7 @@ export function SourceGroupsPanel({ config, onSave }: { config: AppConfig; onSav
               {pickerBusy ? "Đang tải..." : "Chưa có danh sách — bấm Tải danh sách hoặc Quét mới"}
             </p>
           ) : filtered.length === 0 ? (
-            <p className="hint" style={{ textAlign: "center" }}>Không có nhóm nào khớp bộ lọc — thử đổi filter hoặc bấm Quét mới để cập nhật quyền</p>
+            <p className="hint" style={{ textAlign: "center" }}>Không còn nhóm chưa thêm nào khớp bộ lọc — thử đổi filter hoặc bấm Quét mới để cập nhật quyền</p>
           ) : (
             <>
               <div className="thumb-grid">
@@ -267,10 +325,43 @@ export function SourceGroupsPanel({ config, onSave }: { config: AppConfig; onSav
                   <Avatar src={g?.avatar || g?.avt} name={g?.name || s} />
                   <div className="thumb-name" title={s}>{g?.name || s}</div>
                   <div className="thumb-sub" title={s}>{s.startsWith("http") ? s.slice(0, 22) + "…" : g ? g.id.slice(0, 10) + "…" : ""}</div>
+                  <div className="thumb-actions">
+                    <button className="mini" aria-label={`Liên hệ ${s}`} onClick={() => openContactEditor(s)}>👥 Liên hệ</button>
+                  </div>
                 </div>
               );
             })}
           </div>
+          {contactSource && (
+            <section className="source-contact-editor" aria-labelledby="source-contact-title">
+              <div className="source-contact-heading">
+                <div>
+                  <h3 id="source-contact-title">👥 Liên hệ quản lý</h3>
+                  <p>{findGroup(contactSource)?.name || contactSource}</p>
+                </div>
+                <button className="mini" aria-label="Đóng liên hệ" onClick={() => setContactSource(null)}>✕</button>
+              </div>
+              <p className="hint">Thông tin chỉ lưu trên máy này. Mỗi ô có thể nhập nhiều dòng.</p>
+              <div className="source-contact-fields">
+                <label className="field">Admin
+                  <textarea value={contactDraft.admins} maxLength={CONTACT_LIMIT} onChange={(e) => setContactField("admins", e.target.value)} placeholder="Tên — SĐT/Zalo" />
+                </label>
+                <label className="field">Phó nhóm
+                  <textarea value={contactDraft.deputies} maxLength={CONTACT_LIMIT} onChange={(e) => setContactField("deputies", e.target.value)} placeholder="Tên — SĐT/Zalo" />
+                </label>
+                <label className="field">Nhóm hỗ trợ
+                  <textarea value={contactDraft.supportGroup} maxLength={CONTACT_LIMIT} onChange={(e) => setContactField("supportGroup", e.target.value)} placeholder="Tên nhóm — link Zalo" />
+                </label>
+                <label className="field">Ghi chú
+                  <textarea value={contactDraft.note} maxLength={CONTACT_LIMIT} onChange={(e) => setContactField("note", e.target.value)} placeholder="Ví dụ: ưu tiên liên hệ giờ hành chính" />
+                </label>
+              </div>
+              <div className="source-contact-actions">
+                <button className="mini" onClick={() => setContactDraft(EMPTY_SOURCE_CONTACT)}>Xóa nội dung</button>
+                <button className="mini primary" onClick={saveContact}>💾 Lưu liên hệ</button>
+              </div>
+            </section>
+          )}
           <div className="pager">
             <button className="mini" disabled={curPage <= 0} onClick={() => setPage((p) => p - 1)}>
               ‹ Trước
@@ -293,9 +384,12 @@ export function AreasPanel({ config, onSave }: { config: AppConfig; onSave: (c: 
   const PAGE = 8;
   const [rows, setRows] = useState(
     (config.areas || []).map((a) => ({
+      matchAll: a.matchAll === true,
       keywords: (a.keywords || []).join(", "),
       link: a.groupLink || "",
       id: a.id || "",
+      priceOperator: a.priceCondition?.operator || "",
+      priceValue: a.priceCondition?.value?.toString() || "",
     }))
   );
   const [msg, setMsg] = useState<{ t: string; k: "ok" | "err" } | null>(null);
@@ -304,16 +398,24 @@ export function AreasPanel({ config, onSave }: { config: AppConfig; onSave: (c: 
   const [sel, setSel] = useState<Set<number>>(new Set());
   // picker
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [groups, setGroups] = useState<GroupInfo[]>([]);
+  const [groups, setGroups] = useState<GroupInfo[]>(readCachedGroups);
   const [pickerPage, setPickerPage] = useState(0);
   const [pickerSel, setPickerSel] = useState<Set<number>>(new Set());
   const [pickerBusy, setPickerBusy] = useState(false);
   const [pickerSearch, setPickerSearch] = useState("");
   const [pickerKw, setPickerKw] = useState("");
   const [pickerMgr, setPickerMgr] = useState<"all" | "manager" | "owner" | "admin">("all");
+  const configuredKeys = useMemo(() => configuredGroupKeys(config), [config]);
 
   useEffect(() => {
-    setRows((config.areas || []).map((a) => ({ keywords: (a.keywords || []).join(", "), link: a.groupLink || "", id: a.id || "" })));
+    setRows((config.areas || []).map((a) => ({
+      matchAll: a.matchAll === true,
+      keywords: (a.keywords || []).join(", "),
+      link: a.groupLink || "",
+      id: a.id || "",
+      priceOperator: a.priceCondition?.operator || "",
+      priceValue: a.priceCondition?.value?.toString() || "",
+    })));
   }, [config]);
 
   const pages = Math.max(1, Math.ceil(rows.length / PAGE));
@@ -322,9 +424,13 @@ export function AreasPanel({ config, onSave }: { config: AppConfig; onSave: (c: 
 
   const save = async (nextRows = rows) => {
     const areas = nextRows.map((r) => ({
-      keywords: splitList(r.keywords),
+      matchAll: r.matchAll,
+      keywords: r.matchAll ? [] : splitList(r.keywords),
       groupLink: r.link.trim(),
       id: r.id.trim() || undefined,
+      priceCondition: !r.matchAll && r.priceOperator && r.priceValue !== ""
+        ? { operator: r.priceOperator as "<" | ">" | "=", value: Number(r.priceValue) }
+        : undefined,
     }));
     try {
       await onSave({ ...config, areas });
@@ -379,12 +485,21 @@ export function AreasPanel({ config, onSave }: { config: AppConfig; onSave: (c: 
     }
   };
 
+  useEffect(() => {
+    let mounted = true;
+    void api.groups().then((result) => {
+      if (mounted) setGroups(result.groups || []);
+    }).catch(() => undefined);
+    return () => { mounted = false; };
+  }, []);
+
   const openPicker = async () => {
     setPickerOpen((v) => !v);
     if (!groups.length) await loadGroups(false);
   };
 
-  const baseFiltered = pickerSearch ? groups.filter((g) => nameKey(g.name).includes(nameKey(pickerSearch)) || g.id.includes(pickerSearch)) : groups;
+  const availableGroups = groups.filter((g) => !isConfiguredGroup(g, configuredKeys));
+  const baseFiltered = pickerSearch ? availableGroups.filter((g) => nameKey(g.name).includes(nameKey(pickerSearch)) || g.id.includes(pickerSearch)) : availableGroups;
   const filtered = baseFiltered.filter((g) => {
     if (pickerMgr === "manager") return !!(g as any).isManager;
     if (pickerMgr === "owner") return !!(g as any).isOwner;
@@ -408,7 +523,7 @@ export function AreasPanel({ config, onSave }: { config: AppConfig; onSave: (c: 
     const kws = splitList(pickerKw);
     const next = [...rows];
     for (const g of picked) {
-      next.push({ keywords: kws.join(", "), link: "", id: g.id });
+      next.push({ matchAll: false, keywords: kws.join(", "), link: "", id: g.id, priceOperator: "", priceValue: "" });
     }
     setRows(next);
     setPickerSel(new Set());
@@ -437,20 +552,20 @@ export function AreasPanel({ config, onSave }: { config: AppConfig; onSave: (c: 
         </span>
       </h2>
       <p className="hint">
-        Mỗi khu vực: <b>từ khoá</b> (bài chứa từ khoá → vào nhóm đó) + <b>nhóm đích</b>. Một bài chỉ vào đúng 1 nhóm khớp mạnh nhất.
+        Chọn lọc theo từ khóa hoặc nhận tất cả bài viết. Nhóm nhận tất cả vẫn nhận bài đã gửi vào nhóm riêng; các bộ lọc chung vẫn áp dụng.
       </p>
 
       <div className="row">
         <button className="mini" onClick={openPicker}>
           {pickerOpen ? "▴ Đóng danh sách" : "▾ Thêm từ danh sách nhóm đã quét"}
         </button>
-        <button className="mini" onClick={() => setRows((rs) => [...rs, { keywords: "", link: "", id: "" }])}>
+        <button className="mini" onClick={() => setRows((rs) => [...rs, { matchAll: false, keywords: "", link: "", id: "", priceOperator: "", priceValue: "" }])}>
           + Thêm khu vực thủ công
         </button>
       </div>
 
       {pickerOpen && (
-        <div style={{ marginTop: 12, border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "#fbfcfe" }}>
+        <div role="region" aria-label="Danh sách nhóm chưa được cấu hình" style={{ marginTop: 12, border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "#fbfcfe" }}>
           <div className="row" style={{ marginBottom: 10 }}>
             <input type="text" value={pickerSearch} onChange={(e) => setPickerSearch(e.target.value)} placeholder="Tìm nhóm..." style={{ flex: 1 }} />
             <select value={pickerMgr} onChange={(e) => setPickerMgr(e.target.value as any)} style={{ maxWidth: 140 }}>
@@ -470,7 +585,7 @@ export function AreasPanel({ config, onSave }: { config: AppConfig; onSave: (c: 
           {groups.length === 0 ? (
             <p className="hint" style={{ textAlign: "center" }}>{pickerBusy ? "Đang tải..." : "Chưa có danh sách — bấm Tải danh sách"}</p>
           ) : filtered.length === 0 ? (
-            <p className="hint" style={{ textAlign: "center" }}>Không có nhóm nào khớp bộ lọc — thử đổi filter hoặc Quét mới</p>
+            <p className="hint" style={{ textAlign: "center" }}>Không còn nhóm chưa thêm nào khớp bộ lọc — thử đổi filter hoặc Quét mới</p>
           ) : (
             <>
               <div className="thumb-grid">
@@ -526,31 +641,47 @@ export function AreasPanel({ config, onSave }: { config: AppConfig; onSave: (c: 
               const ri = resolveInfo.get(absIdx);
               const thumbName = g?.name || (r.keywords ? r.keywords.split(",")[0]?.trim() : "") || `Khu vực ${absIdx + 1}`;
               return (
-                <div key={absIdx} className={`area-item ${checked ? "selected" : ""}`} style={{ position: "relative", borderColor: checked ? "var(--accent)" : undefined, background: checked ? "var(--accent-soft)" : undefined }}>
-                  <input type="checkbox" style={{ position: "absolute", top: 10, left: 10 }} checked={checked} onChange={() => setSel((prev) => { const n = new Set(prev); if (n.has(i)) n.delete(i); else n.add(i); return n; })} />
-                  <div style={{ display: "flex", gap: 12, paddingLeft: 22 }}>
+                <div key={absIdx} className={`area-item ${checked ? "selected" : ""}`}>
+                  <input className="area-checkbox" type="checkbox" checked={checked} onChange={() => setSel((prev) => { const n = new Set(prev); if (n.has(i)) n.delete(i); else n.add(i); return n; })} />
                     <Avatar src={g?.avatar || g?.avt} name={thumbName} size={44} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="row" style={{ gap: 8 }}>
-                        <label className="field" style={{ flex: 1 }}>
-                          Từ khoá
-                          <input type="text" value={r.keywords} onChange={(e) => setRow(absIdx, { keywords: e.target.value })} placeholder="vd: ha dong, nguyen trai" />
+                    <div className="area-fields">
+                        <label className="field area-field area-mode">
+                          Chế độ nhận bài
+                          <select value={r.matchAll ? "all" : "keywords"} onChange={(e) => setRow(absIdx, { matchAll: e.target.value === "all" })}>
+                            <option value="keywords">Lọc theo từ khóa</option>
+                            <option value="all">Tất cả bài viết</option>
+                          </select>
                         </label>
-                        <label className="field" style={{ flex: 1 }}>
+                        <label className="field area-field area-keywords">
+                          Từ khoá
+                          <input type="text" disabled={r.matchAll} value={r.keywords} onChange={(e) => setRow(absIdx, { keywords: e.target.value })} placeholder={r.matchAll ? "Không cần từ khóa" : "vd: ha dong, nguyen trai"} />
+                        </label>
+                        <label className="field area-field area-link">
                           Link nhóm đích
                           <input type="text" value={r.link} onChange={(e) => setRow(absIdx, { link: e.target.value })} placeholder="https://zalo.me/g/..." />
                         </label>
-                        <label className="field" style={{ maxWidth: 160 }}>
+                        <label className="field area-field area-id">
                           ID
                           <input type="text" value={r.id} onChange={(e) => setRow(absIdx, { id: e.target.value })} placeholder="group id" />
                         </label>
-                      </div>
+                        <label className="field area-field area-price-operator">
+                          So sánh giá
+                          <select disabled={r.matchAll} value={r.matchAll ? "" : r.priceOperator} onChange={(e) => setRow(absIdx, { priceOperator: e.target.value })}>
+                            <option value="">Không lọc</option>
+                            <option value="<">&lt;</option>
+                            <option value=">">&gt;</option>
+                            <option value="=">=</option>
+                          </select>
+                        </label>
+                        <label className="field area-field area-price-value">
+                          Triệu
+                          <input type="number" min={0} step={0.1} disabled={r.matchAll || !r.priceOperator} value={r.matchAll ? "" : r.priceValue} onChange={(e) => setRow(absIdx, { priceValue: e.target.value })} placeholder="4" />
+                        </label>
                       {ri && <div className={`area-res ${ri.ok ? "ok" : "err"}`}>{ri.ok ? `✓ ${ri.name} — ${ri.groupId}` : `✗ ${ri.error}`}</div>}
                     </div>
-                    <button className="mini danger" title="Xoá khu vực" onClick={async () => { const next = rows.filter((_, idx) => idx !== absIdx); setRows(next); await save(next); }} style={{ alignSelf: "flex-start" }}>
+                    <button className="area-remove danger" title="Xoá khu vực" aria-label={`Xoá khu vực ${thumbName}`} onClick={async () => { const next = rows.filter((_, idx) => idx !== absIdx); setRows(next); await save(next); }}>
                       ✕
                     </button>
-                  </div>
                 </div>
               );
             })}

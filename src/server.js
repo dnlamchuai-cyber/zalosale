@@ -40,7 +40,7 @@ export class ControlServer {
       this.server = http.createServer((req, res) => {
         this.handle(req, res).catch((e) => {
           logger.error(`Lỗi HTTP ${req.url}: ${e.stack}`);
-          this.json(res, 500, { ok: false, error: e.message });
+          this.json(res, 500, { ok: false, error: "Yêu cầu không thể hoàn tất lúc này" });
         });
       });
       this.server.on("error", reject);

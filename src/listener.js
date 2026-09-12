@@ -2,8 +2,13 @@ import { ThreadType } from "zca-js";
 import fs from "node:fs";
 import path from "node:path";
 import { logger } from "./logger.js";
-import { normalizeText } from "./processor.js";
+import { normalizeText, parseCommissionPercent } from "./processor.js";
+import { photoUrls } from "./media.js";
 import { GROUPS_CACHE_PATH } from "./config.js";
+import { readPersistedGroups, toPersistedGroups } from "./group-cache.js";
+import { readPersistedScanSync, writePersistedScanSync } from "./scan-state.js";
+import { extractStickerId } from "./closing-sticker.js";
+import { parseFullBuildingNotice } from "./full-building.js";
 
 const norm = (s) => normalizeText(s);
 /** Khoá so khớp tên nhóm: bỏ emoji/icon/dấu câu, chỉ giữ chữ + số + khoảng trắng */
@@ -14,26 +19,105 @@ const nameKey = (s) =>
     .trim();
 
 const isGroupLink = (s) => /zalo\.me\/g\//.test(String(s || ""));
+const ALBUM_DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
+const MIN_OVERLAPPING_PHOTOS = 3;
+const GROUP_INFO_BATCH_SIZE = 5;
+// WHY: Giảm thời gian "Quét mới" nhưng không dồn hàng chục request vào Zalo cùng lúc.
+const GROUP_INFO_CONCURRENCY = 5;
+// WHY: Lịch sử nhóm nặng hơn metadata; giữ pool nhỏ để không tạo tải đột biến cho Zalo.
+const HISTORY_SCAN_CONCURRENCY = 3;
+
+async function mapWithLimitedConcurrency(values, concurrency, worker) {
+  const results = new Array(values.length);
+  let nextIndex = 0;
+
+  async function consume() {
+    while (nextIndex < values.length) {
+      const index = nextIndex++;
+      results[index] = await worker(values[index], index);
+    }
+  }
+
+  const workerCount = Math.min(concurrency, values.length);
+  await Promise.all(Array.from({ length: workerCount }, consume));
+  return results;
+}
+
+async function getGroupInfoBatches(api, batches) {
+  return mapWithLimitedConcurrency(batches, GROUP_INFO_CONCURRENCY, async (batch, batchIndex) => {
+    try {
+      return await api.getGroupInfo(batch);
+    } catch {
+      logger.warn(`getGroupInfo lô ${batchIndex + 1} lỗi — bỏ qua`);
+      return null;
+    }
+  });
+}
+
+/** Zalo đôi khi trả lại các lát chồng nhau của cùng album; chỉ bỏ lát ảnh không chữ bị lặp. */
+export function isRepeatedPhotoOnlyCluster(posts, threadId, clean, urls, timestamp) {
+  if (clean || urls.length < MIN_OVERLAPPING_PHOTOS) return false;
+  return posts.some((post) => {
+    if (post.tid !== threadId || Math.abs((post.ts || 0) - timestamp) > ALBUM_DUPLICATE_WINDOW_MS) return false;
+    const previousUrls = new Set(post.photoUrls || []);
+    return urls.filter((url) => previousUrls.has(url)).length >= MIN_OVERLAPPING_PHOTOS;
+  });
+}
+
+/** Xóa kết quả quét cũ của nguồn không còn được cấu hình, kể cả payload có thể đem đi gửi. */
+export function pruneScanSources(scan, isAllowedSource) {
+  if (!scan || !Array.isArray(scan.posts)) return false;
+  const posts = scan.posts.filter((post) => isAllowedSource(String(post.tid || "")));
+  if (posts.length === scan.posts.length) return false;
+
+  const postIds = new Set(posts.map((post) => post.id));
+  scan.posts = posts;
+  if (scan.raw instanceof Map) scan.raw = new Map([...scan.raw].filter(([postId]) => postIds.has(postId)));
+  scan.fullBuildings = (scan.fullBuildings || []).filter((notice) => isAllowedSource(String(notice.threadId || "")));
+  scan.groups = new Set(posts.map((post) => post.tid)).size;
+  return true;
+}
+
+/** Xóa raw payload ngay khi gửi xong để tin không thể xuất hiện lại trong lượt quét sau. */
+export function removeScanPosts(scan, postIds) {
+  if (!scan || !Array.isArray(scan.posts) || !postIds?.size) return false;
+  const posts = scan.posts.filter((post) => !postIds.has(post.id));
+  if (posts.length === scan.posts.length) return false;
+
+  const remainingIds = new Set(posts.map((post) => post.id));
+  scan.posts = posts;
+  if (scan.raw instanceof Map) scan.raw = new Map([...scan.raw].filter(([postId]) => remainingIds.has(postId)));
+  scan.groups = new Set(posts.map((post) => post.tid)).size;
+  return true;
+}
 
 /**
  * Khởi tạo bot: lắng nghe tin nhắn, nhận diện nhóm nguồn,
  * gom bài qua batcher, forward qua forwarder, xử lý lệnh DM.
  */
-export function startBot({ api, config, batcher, forwarder, status }) {
+export function startBot({ api, config, batcher, forwarder, status, groupsCachePath = GROUPS_CACHE_PATH, scanStatePath = null, closingStickerStore = null, wasSourceContentSent = async () => false }) {
   const { listener } = api;
   let sourceNames = config.sourceGroups.filter((s) => !isGroupLink(s)).map(nameKey).filter(Boolean);
   let sourceLinks = config.sourceGroups.filter((s) => isGroupLink(s)).map((s) => String(s).trim());
   const knownSources = new Map(); // threadId -> tên nhóm
+  const resolvedSourceLinks = new Map(); // link -> threadId
   const threadNames = new Map(); // threadId -> tên (cache)
   const recentList = new Map(); // dmThreadId -> [{index, tid, name, item}]
+  const awaitingClosingSticker = new Set();
 
   /** resolve link nhóm nguồn → threadId + tên (đưa thẳng vào knownSources) */
   async function resolveSourceLinks() {
+    const activeLinks = new Set(sourceLinks);
+    for (const link of resolvedSourceLinks.keys()) {
+      if (!activeLinks.has(link)) resolvedSourceLinks.delete(link);
+    }
     for (const link of sourceLinks) {
       try {
         const info = await api.getGroupLinkInfo({ link });
         if (info?.groupId) {
-          knownSources.set(String(info.groupId), info.name || String(info.groupId));
+          const groupId = String(info.groupId);
+          knownSources.set(groupId, info.name || groupId);
+          resolvedSourceLinks.set(link, groupId);
           logger.info(`Nhóm nguồn từ link: "${info.name}" (${info.groupId})`);
         }
       } catch (e) {
@@ -41,6 +125,22 @@ export function startBot({ api, config, batcher, forwarder, status }) {
       }
     }
     syncStatus();
+    pruneCurrentScan();
+  }
+
+  function isConfiguredSource(threadId) {
+    if (config.sourceGroups.some((source) => String(source).trim() === threadId)) return true;
+    if ([...resolvedSourceLinks.values()].includes(threadId)) return true;
+    const sourceName = nameKey(knownSources.get(threadId) || threadNames.get(threadId) || "");
+    const isConfiguredName = config.sourceGroups
+      .filter((source) => !isGroupLink(source) && !/^\d+$/.test(String(source).trim()))
+      .some((source) => {
+        const configuredName = nameKey(source);
+        return sourceName.length >= 3 && configuredName.length >= 3
+          && (sourceName.includes(configuredName) || configuredName.includes(sourceName));
+      });
+    if (isConfiguredName) return true;
+    return sourceLinks.length > resolvedSourceLinks.size;
   }
 
   async function threadName(threadId) {
@@ -88,23 +188,15 @@ export function startBot({ api, config, batcher, forwarder, status }) {
 
   /**
    * Danh sách nhóm bot đang tham gia.
-   * - Lưu cache vào config/groups-cache.json (TTL 10 phút) → lần sau bấm "Tải danh sách" không gọi lại API
+   * - Lưu metadata vào config/groups-cache.json → mở web dùng ngay, không chờ Zalo quét lại
    * - force=true (nút "Quét mới") → bỏ qua cache, quét lại từ Zalo
    */
   async function listGroups(force = false) {
-    const CACHE_TTL = 10 * 60 * 1000;
     if (!force) {
-      try {
-        const cached = JSON.parse(fs.readFileSync(GROUPS_CACHE_PATH, "utf8"));
-        if (cached?.savedAt && Date.now() - cached.savedAt < CACHE_TTL && Array.isArray(cached.groups) && cached.groups.length > 0) {
-          // cache cũ chưa có thông tin chủ/QTV → bỏ qua để quét mới có đủ dữ liệu
-          const hasMgr = cached.groups[0]?.hasOwnProperty("isManager");
-          if (!hasMgr) throw new Error("cache thiếu isManager");
-          logger.info(`Dùng danh sách nhóm từ cache (${cached.groups.length} nhóm, ${Math.round((Date.now() - cached.savedAt) / 60000)} phút trước)`);
-          return cached.groups;
-        }
-      } catch {
-        // chưa có cache hoặc lỗi → quét mới
+      const cachedGroups = readPersistedGroups(groupsCachePath);
+      if (cachedGroups.length) {
+        logger.info(`Dùng metadata nhóm đã lưu (${cachedGroups.length} nhóm) — bấm Quét mới để cập nhật`);
+        return cachedGroups;
       }
     }
 
@@ -127,38 +219,33 @@ export function startBot({ api, config, batcher, forwarder, status }) {
     try {
       const { gridVerMap } = await api.getAllGroups();
       const ids = Object.keys(gridVerMap || {});
-      for (let i = 0; i < ids.length && i < 300; i += 5) {
-        const batch = ids.slice(i, i + 5);
-        try {
-          const res = await api.getGroupInfo(batch);
-          if (res?.gridInfoMap) {
-            for (const g of Object.values(res.gridInfoMap)) {
-              const isOwner = !!(myId && g?.creatorId && String(g.creatorId) === String(myId));
-              const isAdmin = !!(myId && Array.isArray(g?.adminIds) && g.adminIds.map(String).includes(String(myId)));
-              push(g?.name || g?.groupId || "?", g?.groupId || "?", g?.avt || g?.fullAvt || g?.avatar || "", {
-                type: g?.type ?? 1,
-                subType: g?.subType ?? 0,
-                isOwner,
-                isAdmin,
-                isManager: isOwner || isAdmin,
-                totalMember: g?.totalMember ?? g?.memberIds?.length ?? 0,
-                creatorId: g?.creatorId || "",
-              });
-            }
+      const batches = [];
+      for (let i = 0; i < ids.length && i < 300; i += GROUP_INFO_BATCH_SIZE) {
+        batches.push(ids.slice(i, i + GROUP_INFO_BATCH_SIZE));
+      }
+      const groupInfoResults = await getGroupInfoBatches(api, batches);
+      for (const res of groupInfoResults) {
+        if (res?.gridInfoMap) {
+          for (const g of Object.values(res.gridInfoMap)) {
+            const isOwner = !!(myId && g?.creatorId && String(g.creatorId) === String(myId));
+            const isAdmin = !!(myId && Array.isArray(g?.adminIds) && g.adminIds.map(String).includes(String(myId)));
+            push(g?.name || g?.groupId || "?", g?.groupId || "?", g?.avt || g?.fullAvt || g?.avatar || "", {
+              type: g?.type ?? 1,
+              subType: g?.subType ?? 0,
+              isOwner,
+              isAdmin,
+              isManager: isOwner || isAdmin,
+              totalMember: g?.totalMember ?? g?.memberIds?.length ?? 0,
+              creatorId: g?.creatorId || "",
+            });
           }
-        } catch {
-          logger.warn(`getGroupInfo lô ${i / 5 + 1} lỗi — bỏ qua`);
         }
       }
     } catch (e) {
       logger.warn(`getAllGroups lỗi (${e.message}) — thử dùng cache cũ`);
-      try {
-        const cached = JSON.parse(fs.readFileSync(GROUPS_CACHE_PATH, "utf8"));
-        if (Array.isArray(cached.groups) && cached.groups.length) {
-          for (const g of cached.groups) push(g.name, g.id, g.avt || g.avatar || "", { isOwner: g.isOwner, isAdmin: g.isAdmin, isManager: g.isManager, totalMember: g.totalMember, creatorId: g.creatorId });
-          logger.info(`Đã dùng cache cũ (${cached.groups.length} nhóm) do mạng lỗi`);
-        }
-      } catch {}
+      const cachedGroups = readPersistedGroups(groupsCachePath);
+      for (const g of cachedGroups) push(g.name, g.id, g.avt || g.avatar || "", { isOwner: g.isOwner, isAdmin: g.isAdmin, isManager: g.isManager, totalMember: g.totalMember, creatorId: g.creatorId });
+      if (cachedGroups.length) logger.info(`Đã dùng metadata nhóm đã lưu (${cachedGroups.length} nhóm) do mạng lỗi`);
       if (!out.length) logger.warn("Không có cache cũ — chỉ hiện nhóm đã biết (areas + knownSources)");
     }
     // Nhóm đích từ config (resolve link → tên + id thật)
@@ -179,8 +266,8 @@ export function startBot({ api, config, batcher, forwarder, status }) {
     // lưu cache — chỉ lưu khi có dữ liệu, tránh ghi đè cache tốt bằng cache rỗng khi mạng lỗi
     if (out.length > 0) {
       try {
-        fs.mkdirSync(path.dirname(GROUPS_CACHE_PATH), { recursive: true });
-        fs.writeFileSync(GROUPS_CACHE_PATH, JSON.stringify({ savedAt: Date.now(), groups: out }, null, 2));
+        fs.mkdirSync(path.dirname(groupsCachePath), { recursive: true });
+        fs.writeFileSync(groupsCachePath, JSON.stringify({ savedAt: Date.now(), groups: toPersistedGroups(out) }, null, 2));
       } catch (e) {
         logger.warn(`Lưu cache nhóm lỗi: ${e.message}`);
       }
@@ -192,7 +279,9 @@ export function startBot({ api, config, batcher, forwarder, status }) {
 
   /** chọn threadId nguồn theo tên khớp; không có tên = tất cả đã biết */
   function pickSources(nameArg) {
-    if (!nameArg) return [...knownSources.keys()];
+    // Không có tên cụ thể nghĩa là quét đúng danh sách đã tích trong cấu hình,
+    // tuyệt đối không mở rộng sang nhóm từng xuất hiện trong phiên trước.
+    if (!nameArg) return [];
     const k = nameKey(nameArg);
     const hit = [...knownSources.entries()].filter(([, name]) => {
       const nk = nameKey(name);
@@ -203,9 +292,8 @@ export function startBot({ api, config, batcher, forwarder, status }) {
 
   /** Đảm bảo có ID nhóm nguồn ngay cả khi chưa học (vừa thêm cấu hình chưa có tin nhắn) */
   async function ensureSourceIds(nameArg) {
-    let ids = pickSources(nameArg);
-    if (ids.length) return ids;
-    // Chưa học nhóm nào → thử resolve trực tiếp từ config
+    const resolved = new Set(pickSources(nameArg));
+    // Luôn resolve toàn bộ cấu hình: một nhóm đã học không được che mất nhóm còn lại.
     const targetGroups = nameArg
       ? config.sourceGroups.filter((s) => {
           const k = nameKey(s);
@@ -213,8 +301,7 @@ export function startBot({ api, config, batcher, forwarder, status }) {
           return k.includes(q) || q.includes(k);
         })
       : config.sourceGroups.slice();
-    if (!targetGroups.length) return [];
-    const resolved = new Set();
+    if (!targetGroups.length) return [...resolved];
     // ID thuần (toàn số) → dùng trực tiếp
     for (const s of targetGroups) {
       if (/^\d+$/.test(String(s).trim())) {
@@ -239,6 +326,7 @@ export function startBot({ api, config, batcher, forwarder, status }) {
           const gid = String(info.groupId);
           resolved.add(gid);
           knownSources.set(gid, info.name || gid);
+          resolvedSourceLinks.set(String(s).trim(), gid);
         }
       } catch {}
     }
@@ -246,21 +334,23 @@ export function startBot({ api, config, batcher, forwarder, status }) {
     const hasName = targetGroups.some((s) => !isGroupLink(s));
     if (hasName) {
       try {
-        const allGroups = await listGroups(false);
-        for (const s of targetGroups) {
-          if (isGroupLink(s)) continue;
-          if (/^\d+$/.test(String(s).trim())) continue;
-          const k = nameKey(s);
-          if (!k || k.length < 3) continue;
-          for (const g of allGroups) {
-            const gk = nameKey(g.name);
-            if (!gk || gk.length < 3) continue;
-            if (gk.includes(k) || k.includes(gk)) {
-              resolved.add(String(g.id));
-              knownSources.set(String(g.id), g.name);
+        const matchGroups = (allGroups) => {
+          for (const s of targetGroups) {
+            if (isGroupLink(s) || /^\d+$/.test(String(s).trim())) continue;
+            const k = nameKey(s);
+            if (!k || k.length < 3) continue;
+            for (const g of allGroups) {
+              const gk = nameKey(g.name);
+              if (gk && gk.length >= 3 && (gk.includes(k) || k.includes(gk))) {
+                resolved.add(String(g.id));
+                knownSources.set(String(g.id), g.name);
+              }
             }
           }
-        }
+        };
+        matchGroups(await listGroups(false));
+        // Cache cũ không có nhóm mới → làm mới một lần rồi thử lại.
+        if (!resolved.size) matchGroups(await listGroups(true));
       } catch {}
     }
     if (resolved.size) syncStatus();
@@ -364,6 +454,47 @@ export function startBot({ api, config, batcher, forwarder, status }) {
   /* ---------- quét trước → chọn sau (manual) ---------- */
   const scans = new Map(); // scanId -> { range, groups: number, posts: [...], raw: Map(postId -> {tid, items}) }
   let scanSeq = 0;
+  let latestScanId = null;
+  let manualProgress = null;
+
+  const persistedScan = scanStatePath ? readPersistedScanSync(scanStatePath) : null;
+  if (persistedScan) {
+    scans.set(persistedScan.scanId, persistedScan);
+    latestScanId = persistedScan.scanId;
+    logger.info(`Đã khôi phục ${persistedScan.posts.length} bài quét thủ công từ phiên trước`);
+    pruneSentScanPosts(persistedScan).catch((error) => {
+      logger.warn(`Không lọc được tin đã gửi trong phiên quét cũ: ${error.message}`);
+    });
+  }
+
+  function persistScan(scan) {
+    if (!scanStatePath) return;
+    try {
+      writePersistedScanSync(scanStatePath, scan);
+    } catch (e) {
+      logger.warn(`Lưu kết quả quét lỗi: ${e.message}`);
+    }
+  }
+
+  function pruneCurrentScan() {
+    const scan = latestScanId ? scans.get(latestScanId) : null;
+    if (!scan || !pruneScanSources(scan, isConfiguredSource)) return;
+    persistScan(scan);
+    logger.info(`Đã bỏ tin quét của nhóm nguồn không còn cấu hình — còn ${scan.posts.length} bài`);
+  }
+
+  async function pruneSentScanPosts(scan) {
+    if (!scan?.posts?.length) return;
+    const completedPostIds = new Set();
+    for (const post of scan.posts) {
+      if (post.clean && await wasSourceContentSent({ sourceId: post.tid, content: post.clean })) {
+        completedPostIds.add(post.id);
+      }
+    }
+    if (!removeScanPosts(scan, completedPostIds)) return;
+    persistScan(scan);
+    logger.info(`Đã bỏ ${completedPostIds.size} tin quét cũ đã gửi thành công`);
+  }
 
   function pruneScans() {
     const ids = [...scans.keys()];
@@ -379,67 +510,195 @@ export function startBot({ api, config, batcher, forwarder, status }) {
     if (!ids.length) {
       return { error: "Chưa tìm thấy nhóm nguồn nào khớp. Kiểm tra lại tên/link nhóm nguồn hoặc bấm Quét mới để tải danh sách nhóm." };
     }
+    const scanQueryKey = `${normalizeText(String(nameArg || ""))}|${normalizeText(String(keywordArg || ""))}|${range.fromMs}|${range.toMs}`;
+    // Mỗi lần bấm Quét = bảng mới hoàn toàn theo đúng khoảng ngày + nguồn + từ khóa
+    // hiện tại. Không cộng dồn kết quả cũ để tránh danh sách phình to sai số ngày.
     const scanId = `s${Date.now()}-${++scanSeq}`;
+    // Một lượt quét mới thay bảng cũ, không giữ thông báo tiến độ của lượt gửi trước.
+    manualProgress = null;
     const posts = [];
     const raw = new Map();
+    const fullBuildings = [];
+    const postsByThreadId = new Map();
+    let added = 0;
     let groups = 0;
     const keyword = normalizeText(String(keywordArg).trim());
-    for (const id of ids) {
+    const scanJobs = ids.map((id) => {
       const name = knownSources.get(id) || id;
-      let batches = [];
-      try {
-        batches = await fetchRecentBatches(api, id, range, config);
-      } catch (e) {
-        logger.warn(`Quét nhóm "${name}" lỗi: ${e.message}`);
-        continue;
-      }
+      const sourcePosts = [];
+      postsByThreadId.set(id, sourcePosts);
+      return { id, name, fromMs: range.fromMs, sourcePosts };
+    });
+    const scanResults = await mapWithLimitedConcurrency(
+      scanJobs,
+      HISTORY_SCAN_CONCURRENCY,
+      async (job) => {
+        try {
+          const batches = await fetchRecentBatches(api, job.id, { ...range, fromMs: job.fromMs }, config);
+          return { ...job, batches };
+        } catch (e) {
+          logger.warn(`Quét nhóm "${job.name}" lỗi: ${e.message}`);
+          return { ...job, batches: null };
+        }
+      },
+    );
+    for (const { id, name, sourcePosts, batches } of scanResults) {
+      if (!batches) continue;
       groups++;
+      for (const notice of batches.fullBuildingNotices || []) {
+        if (!fullBuildings.some((entry) => entry.threadId === id && entry.key === notice.key)) {
+          fullBuildings.push({ threadId: id, sourceName: name, key: notice.key, label: notice.label, text: notice.text, status: "full" });
+        }
+      }
       let idx = 0;
       for (const items of batches) {
+        const batchMeta = items.batchMeta ?? {};
         const sourceText = items
           .map((item) => (typeof item.data?.content === "string" ? item.data.content : ""))
           .join("\n\n");
         if (keyword && !normalizeText(sourceText).includes(keyword)) continue;
-        const d = forwarder.describePost(items);
+        const d = forwarder.describePost(items, batchMeta.inheritedDestinations, batchMeta.inheritedRouteVia, batchMeta.inheritedMatchedRules);
         if (d.excluded) continue;
         if (!d.clean && !d.photoCount) continue;
-        const postId = `${scanId}:${id}:${idx++}`;
+        if (d.clean && await wasSourceContentSent({ sourceId: id, content: d.clean })) {
+          logger.info(`Bỏ qua cụm đã gửi từ nhóm nguồn ${id}`);
+          continue;
+        }
         const t = Number(items[0]?.data?.ts || items[0]?.ts || 0);
-        posts.push({
+        if (isRepeatedPhotoOnlyCluster(sourcePosts, id, d.clean, d.photoUrls, t)) continue;
+        const postId = `${scanId}:${id}:${idx++}`;
+        const post = {
           id: postId,
           tid: id,
           name,
           areaName: d.areaName,
+          detectedArea: d.detectedArea,
+          destinationNames: d.destinationNames,
+          routingReason: d.routingReason || null,
+          routingKeys: d.routingKeys || [],
+          matchedRules: d.matchedRules || [],
+          undetermined: Boolean(d.undetermined),
           kw: d.kw,
           clean: (d.clean || "").slice(0, 400),
           photos: d.photoCount,
+          photoUrls: d.photoUrls,
           price: d.price,
+          commissionPercent: parseCommissionPercent(sourceText),
           inPriceRange: d.inPriceRange,
+          status: d.undetermined ? "undetermined" : "pending",
           ts: t,
-        });
-        raw.set(postId, { tid: id, items });
+          clusterItems: items.map((item) => ({
+            text: typeof item.data?.content === "string" ? item.data.content.slice(0, 1000) : "",
+            photoUrls: photoUrls(item),
+            ts: Number(item.data?.ts || item.ts || 0),
+          })),
+        };
+        posts.push(post);
+        sourcePosts.push(post);
+        raw.set(postId, { tid: id, items, batchMeta });
+        added++;
+      }
+    }
+    // Chống trùng khi 2 nhóm nguồn đăng cùng nội dung: giữ bài đầu, đánh dấu các bản sau.
+    // Lúc gửi, kho tin đã gửi vẫn chặn gửi trùng vào cùng nhóm đích.
+    const seenContent = new Map();
+    for (const post of posts) {
+      const key = normalizeText(post.clean || "");
+      if (!key) continue;
+      if (seenContent.has(key)) {
+        post.status = "duplicate";
+        post.duplicateOf = seenContent.get(key);
+      } else {
+        seenContent.set(key, post.id);
       }
     }
     pruneScans();
-    scans.set(scanId, { range, groups, posts, raw });
-    return { scanId, range: range.label, groups, total: posts.length, posts };
+    const scan = { scanId, scanQueryKey, range, groups, posts, raw, fullBuildings };
+    scans.set(scanId, scan);
+    latestScanId = scanId;
+    persistScan(scan);
+    return { scanId, range: range.label, groups, total: posts.length, added, posts };
   }
 
-  function forwardSelected(scanId, indexes) {
+  function scanState() {
+    const scan = latestScanId ? scans.get(latestScanId) : null;
+    if (!scan) return null;
+    return {
+      scanId: scan.scanId,
+      range: scan.range.label,
+      groups: scan.groups,
+      total: scan.posts.length,
+      posts: scan.posts,
+      fullBuildings: scan.fullBuildings || [],
+      progress: manualProgress,
+    };
+  }
+
+  function requestStopAfterCurrent() {
+    if (!manualProgress?.running) return false;
+    manualProgress.stopRequested = true;
+    logger.info("Đã nhận yêu cầu dừng — sẽ dừng sau khi gửi xong cụm hiện tại");
+    return true;
+  }
+
+  async function forwardSelected(scanId, indexes, destinationKeyword = "") {
     const scan = scans.get(scanId);
     if (!scan) return { sent: 0, error: "Không tìm thấy kết quả quét này — hãy quét lại." };
+    const target = destinationKeyword
+      ? config.areas.find((area) => normalizeText(area.keywords?.[0] || "") === normalizeText(destinationKeyword)
+        || String(area.routingKey || "") === normalizeText(destinationKeyword).replace(/[^a-z0-9]+/g, "-"))
+      : null;
+    if (destinationKeyword && !target) return { sent: 0, error: "Không tìm thấy nhóm đích cho từ khóa này — hãy tải lại cấu hình." };
+    const selectedPosts = [...new Set(indexes)]
+      .map((index) => ({ post: scan.posts[index], raw: scan.raw.get(scan.posts[index]?.id) }))
+      .filter(({ post, raw }) => post && raw)
+      .sort((left, right) => (left.post.ts - right.post.ts) || left.post.id.localeCompare(right.post.id));
     let sent = 0;
-    for (const i of indexes) {
-      const post = scan.posts[i];
-      const r = scan.raw.get(post?.id);
-      if (!r) continue;
-      forwarder.enqueue({ threadId: r.tid, items: r.items, source: "manual" });
-      sent++;
+    let failed = 0;
+    const completedPostIds = new Set();
+    manualProgress = {
+      running: true,
+      current: 0,
+      total: selectedPosts.length,
+      sourceName: "",
+      destinationName: target?.keywords?.[0] || "",
+      imageCount: 0,
+      startedAt: Date.now(),
+      stopRequested: false,
+    };
+    for (const [position, { post, raw }] of selectedPosts.entries()) {
+      if (manualProgress.stopRequested) break;
+      manualProgress.current = position + 1;
+      manualProgress.sourceName = post.name;
+      manualProgress.destinationName = target?.keywords?.[0] || post.destinationNames?.join(", ") || "Chưa có nhóm đích";
+      manualProgress.imageCount = post.photos || 0;
+      logger.info(`Gửi cụm ${position + 1}/${selectedPosts.length} theo thứ tự cũ → mới: ${post.name}`);
+      const outcome = await forwarder.enqueue({
+        threadId: raw.tid,
+        items: raw.items,
+        source: "manual",
+        ...raw.batchMeta,
+        inheritedDestinations: target ? [target] : raw.batchMeta.inheritedDestinations,
+      });
+      if (outcome?.sent && !outcome?.error) {
+        completedPostIds.add(post.id);
+        sent++;
+      } else if (outcome?.error) {
+        post.status = "error";
+        failed++;
+      } else if (outcome?.duplicate) {
+        completedPostIds.add(post.id);
+      }
     }
-    return { sent };
+    manualProgress.running = false;
+    manualProgress.stopped = manualProgress.stopRequested;
+    manualProgress.endedAt = Date.now();
+    removeScanPosts(scan, completedPostIds);
+    persistScan(scan);
+    return { sent, failed, stopped: manualProgress.stopped };
   }
 
-  function forwardAll(scanId) {
+  async function forwardAll(scanId) {
     const scan = scans.get(scanId);
     if (!scan) return { sent: 0, error: "Không tìm thấy kết quả quét này — hãy quét lại." };
     return forwardSelected(scanId, scan.posts.map((_, i) => i));
@@ -503,7 +762,11 @@ export function startBot({ api, config, batcher, forwarder, status }) {
     recentList.set(uid, top);
     const text = top
       .map((r, i) => {
-        const content = typeof r.item?.content === "string" ? r.item.content.replace(/\n+/g, " ").slice(0, 80) : "[ảnh/tệp]";
+        const rawContent = typeof r.item?.content === "string" ? r.item.content : "";
+        const fullNotice = parseFullBuildingNotice(rawContent);
+        const content = fullNotice
+          ? `⛔ FULL TÒA: ${fullNotice.label}`
+          : rawContent ? rawContent.replace(/\n+/g, " ").slice(0, 80) : "[ảnh/tệp]";
         return `${i + 1}. (${r.name}) ${content}`;
       })
       .join("\n");
@@ -527,6 +790,46 @@ export function startBot({ api, config, batcher, forwarder, status }) {
     status.mode = mode;
     logger.info(`Đổi mode qua DM: ${mode}`);
     await reply(uid, `Đã đổi mode: ${mode}`);
+  }
+
+  async function cmdSetSticker(uid) {
+    if (!closingStickerStore) return reply(uid, "Bot chưa bật bộ lưu sticker kết thúc.");
+    awaitingClosingSticker.add(String(uid));
+    await reply(uid, "Hãy gửi đúng 1 sticker Zalo trong tin nhắn tiếp theo. Gõ /cancel để huỷ.");
+  }
+
+  async function cmdSticker(uid, arg) {
+    const action = String(arg || "status").toLowerCase();
+    if (!closingStickerStore) return reply(uid, "Bot chưa bật bộ lưu sticker kết thúc.");
+    if (action === "off") {
+      closingStickerStore.clear();
+      awaitingClosingSticker.delete(String(uid));
+      return reply(uid, "Đã tắt sticker kết thúc cụm.");
+    }
+    const sticker = closingStickerStore.get();
+    await reply(uid, sticker
+      ? `Sticker kết thúc đang bật (ID ${sticker.id}).`
+      : "Sticker kết thúc đang tắt. Gõ /setsticker để chọn.");
+  }
+
+  async function saveClosingSticker(message) {
+    const uid = String(message.threadId);
+    if (!awaitingClosingSticker.has(uid)) return false;
+    const stickerId = extractStickerId(message.data);
+    if (!stickerId) {
+      await reply(uid, "Tin này không phải sticker Zalo. Hãy gửi một sticker, hoặc gõ /cancel.");
+      return true;
+    }
+    try {
+      const details = await api.getStickersDetail(stickerId);
+      const sticker = closingStickerStore.save(Array.isArray(details) ? details[0] : details);
+      awaitingClosingSticker.delete(uid);
+      await reply(uid, `Đã lưu sticker ID ${sticker.id}. Từ cụm tiếp theo bot sẽ gửi sticker này ở cuối.`);
+    } catch (error) {
+      logger.warn(`Không lưu được sticker kết thúc (${error.message})`);
+      await reply(uid, "Không đọc được sticker này từ Zalo. Hãy thử gửi lại sticker khác, hoặc gõ /cancel.");
+    }
+    return true;
   }
 
   async function handleCommand(message, content) {
@@ -554,6 +857,16 @@ export function startBot({ api, config, batcher, forwarder, status }) {
       case "mode":
         await cmdMode(uid, rest[0]);
         break;
+      case "setsticker":
+        await cmdSetSticker(uid);
+        break;
+      case "sticker":
+        await cmdSticker(uid, rest[0]);
+        break;
+      case "cancel":
+        awaitingClosingSticker.delete(String(uid));
+        await reply(uid, "Đã huỷ thao tác chọn sticker.");
+        break;
       default:
         await reply(uid, `Không hiểu lệnh "${cmd}". Gõ /help`);
     }
@@ -566,6 +879,7 @@ export function startBot({ api, config, batcher, forwarder, status }) {
       if (message.type === ThreadType.User) {
         const content = typeof message.data?.content === "string" ? message.data.content.trim() : "";
         if (content.startsWith("/")) await handleCommand(message, content);
+        else await saveClosingSticker(message);
         return;
       }
 
@@ -633,7 +947,15 @@ export function startBot({ api, config, batcher, forwarder, status }) {
   }
 
   return {
-    refresh() {
+    refresh(nextConfig = config) {
+      config = nextConfig;
+      forwarder.config = nextConfig;
+      if (batcher) {
+        Object.assign(batcher, nextConfig.forward, {
+          areas: nextConfig.areas,
+          defaultArea: nextConfig.defaultArea,
+        });
+      }
       sourceNames.length = 0;
       sourceLinks.length = 0;
       for (const s of config.sourceGroups) {
@@ -643,6 +965,7 @@ export function startBot({ api, config, batcher, forwarder, status }) {
           if (n) sourceNames.push(n);
         }
       }
+      pruneCurrentScan();
       syncStatus();
       resolveSourceLinks().catch(() => {});
       logger.info("Đã áp dụng cấu hình mới (nhóm nguồn, khu vực, từ khoá...)");
@@ -650,6 +973,8 @@ export function startBot({ api, config, batcher, forwarder, status }) {
     forwardRangeForSources,
     forwardRangeForThread,
     scanRange,
+    scanState,
+    requestStopAfterCurrent,
     forwardSelected,
     forwardAll,
     listGroups,
@@ -661,6 +986,7 @@ export function startBot({ api, config, batcher, forwarder, status }) {
       try {
         listener.removeAllListeners?.();
         listener.stop?.();
+        forwarder.stop?.();
       } catch (e) {
         logger.warn(`Dừng listener lỗi: ${e.message}`);
       }
@@ -677,4 +1003,8 @@ const HELP = `🤖 Hướng dẫn lệnh (chat riêng với bot):
 • /last <số tin> [tên nhóm] — liệt kê tin gần nhất để chọn
 • /f <số> — forward đúng tin đã chọn ở /last
 • /mode auto|manual — bật/tắt forward realtime
+• /setsticker — chờ bạn gửi sticker dùng ở cuối mỗi cụm
+• /sticker status — xem sticker kết thúc đang bật hay tắt
+• /sticker off — tắt sticker kết thúc cụm
+• /cancel — huỷ thao tác chọn sticker
 • /help — hướng dẫn này`;

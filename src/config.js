@@ -1,32 +1,62 @@
+// AI: Codex | WHY: Require explicit opt-in for catch-all routing.
+// SPEC: docs/03_SPEC/SPEC-003.md
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { logger } from "./logger.js";
+import { ensureRoutingKeys } from "./features/location-rules/service.js";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 export const CONFIG_PATH = path.join(ROOT, "config", "config.json");
 export const SESSION_DIR = path.join(ROOT, "config", "session");
 export const TEMP_DIR = path.join(ROOT, ".temp");
 export const GROUPS_CACHE_PATH = path.join(ROOT, "config", "groups-cache.json");
+export const CLOSING_STICKER_PATH = path.join(ROOT, "config", "closing-sticker.json");
+export const SCAN_STATE_PATH = path.join(ROOT, "data", "scan-state.json");
 
 const DEFAULT_FORWARD = {
   windowMs: 3000,
   maxBatchItems: 10,
-  maxWaitMs: 30000,
-  sendDelayMs: 1500,
-  retries: 3,
-  historyGapMs: 10000,
+  maxWaitMs: 120000,
+  sendDelayMs: 500,
+  retries: 1,
+  historyGapMs: 120000,
 };
+const CONTACT_FIELD_LIMIT = 2000;
+const CONTACT_FIELDS = ["admins", "deputies", "supportGroup", "note"];
+
+function parseSourceGroupContacts(rawContacts, sourceGroups) {
+  if (!rawContacts || typeof rawContacts !== "object" || Array.isArray(rawContacts)) return {};
+  const contacts = {};
+
+  for (const source of sourceGroups) {
+    const sourceId = String(source);
+    const rawContact = rawContacts[sourceId];
+    if (!rawContact || typeof rawContact !== "object" || Array.isArray(rawContact)) continue;
+
+    const contact = {};
+    for (const field of CONTACT_FIELDS) {
+      const value = rawContact[field] ?? "";
+      if (typeof value !== "string") throw new Error(`config: sourceGroupContacts.${field} phải là chuỗi`);
+      if (value.length > CONTACT_FIELD_LIMIT) throw new Error(`config: sourceGroupContacts.${field} tối đa ${CONTACT_FIELD_LIMIT} ký tự`);
+      contact[field] = value.trim();
+    }
+    if (CONTACT_FIELDS.some((field) => contact[field])) contacts[sourceId] = contact;
+  }
+  return contacts;
+}
 
 export function parseConfig(raw) {
+  const sourceGroups = Array.isArray(raw.sourceGroups) ? raw.sourceGroups : [];
   const config = {
     mode: raw.mode === "manual" ? "manual" : "auto",
-    sourceGroups: Array.isArray(raw.sourceGroups) ? raw.sourceGroups : [],
-    areas: Array.isArray(raw.areas) ? raw.areas : [],
+    sourceGroups,
+    sourceGroupContacts: parseSourceGroupContacts(raw.sourceGroupContacts, sourceGroups),
+    areas: ensureRoutingKeys(Array.isArray(raw.areas) ? raw.areas : []),
     deleteLines: Array.isArray(raw.deleteLines) ? raw.deleteLines : [],
     excludeKeywords: Array.isArray(raw.excludeKeywords) ? raw.excludeKeywords : [],
     filter: {
-      removePercentLines: false,
+      removePercentLines: true,
       removePriceLines: false,
       ...(raw.filter || {}),
     },
@@ -51,7 +81,7 @@ export function loadConfig() {
 /** Lưu config từ UI: validate rồi ghi file, trả về config đã parse */
 export function saveConfig(raw) {
   const parsed = parseConfig(raw);
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2), "utf8");
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify({ ...raw, areas: parsed.areas, sourceGroupContacts: parsed.sourceGroupContacts }, null, 2), "utf8");
   logger.info("Đã lưu config/config.json từ giao diện");
   return parsed;
 }
@@ -64,11 +94,21 @@ function validate(config) {
     logger.warn("config: chưa có areas (nhóm đích) — bot sẽ không forward gì");
   }
   config.areas.forEach((area, i) => {
-    if (!Array.isArray(area.keywords) || !area.keywords.length) {
+    if (area.matchAll !== undefined && typeof area.matchAll !== "boolean") {
+      throw new Error(`config: areas[${i}].matchAll phải là boolean`);
+    }
+    if (area.matchAll !== true && (!Array.isArray(area.keywords) || !area.keywords.length)) {
       logger.warn(`config: areas[${i}] thiếu keywords (từ khoá nhận định khu vực)`);
     }
     if (!area.groupLink && !area.id) {
       logger.warn(`config: areas[${i}] thiếu groupLink (link nhóm đích)`);
+    }
+    if (area.priceCondition) {
+      const { operator, value } = area.priceCondition;
+      if (!["<", ">", "="].includes(operator) || !Number.isFinite(Number(value)) || Number(value) < 0) {
+        throw new Error(`config: areas[${i}].priceCondition không hợp lệ`);
+      }
+      area.priceCondition = { operator, value: Number(value) };
     }
   });
   const f = config.forward;

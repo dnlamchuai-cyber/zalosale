@@ -1,3 +1,5 @@
+// AI: Codex | WHY: Type the explicit catch-all option across the configuration UI.
+// SPEC: docs/03_SPEC/SPEC-003.md
 export interface ForwardConfig {
   windowMs: number;
   maxBatchItems: number;
@@ -8,10 +10,16 @@ export interface ForwardConfig {
 }
 
 export interface Area {
+  matchAll?: boolean;
   keywords: string[];
   groupLink: string;
   id?: string;
+  routingKey?: string;
   _threadId?: string;
+  priceCondition?: {
+    operator: "<" | ">" | "=";
+    value: number;
+  };
 }
 
 export interface FilterConfig {
@@ -24,9 +32,17 @@ export interface PriceRange {
   max: number;
 }
 
+export interface SourceGroupContact {
+  admins: string;
+  deputies: string;
+  supportGroup: string;
+  note: string;
+}
+
 export interface AppConfig {
   mode: "auto" | "manual";
   sourceGroups: string[];
+  sourceGroupContacts?: Record<string, SourceGroupContact>;
   areas: Area[];
   deleteLines: string[];
   excludeKeywords: string[];
@@ -94,12 +110,42 @@ export interface ScanPost {
   tid: string;
   name: string;
   areaName: string | null;
+  detectedArea?: string | null;
+  destinationNames: string[];
   kw: string;
   clean: string;
   photos: number;
+  photoUrls: string[];
   price: number | null;
+  commissionPercent: number | null;
   inPriceRange: boolean;
+  status?: "pending" | "sent" | "duplicate" | "error" | "undetermined";
+  duplicateOf?: string;
+  routingReason?: "dia-chi" | "gan" | "xe-buyt" | null;
+  routingKeys?: string[];
+  matchedRules?: Array<{ name: string; type: string }>;
+  undetermined?: boolean;
   ts: number;
+  clusterItems: ScanClusterItem[];
+}
+
+export interface ScanClusterItem {
+  text: string;
+  photoUrls: string[];
+  ts: number;
+}
+
+export interface ScanProgress {
+  running: boolean;
+  current: number;
+  total: number;
+  sourceName: string;
+  destinationName: string;
+  imageCount: number;
+  startedAt: number;
+  stopRequested: boolean;
+  stopped?: boolean;
+  endedAt?: number;
 }
 
 export interface ScanResult {
@@ -109,4 +155,55 @@ export interface ScanResult {
   groups: number;
   total: number;
   posts: ScanPost[];
+  fullBuildings?: FullBuildingNotice[];
+  progress?: ScanProgress | null;
+}
+
+export interface FullBuildingNotice {
+  threadId: string;
+  sourceName: string;
+  key: string;
+  label: string;
+  text: string;
+  status: "full";
+}
+
+export interface SentRoomDestination {
+  id: string;
+  name: string;
+  sentCount: number;
+  lastSentAt: number;
+}
+
+export interface SentRoomSummary {
+  id: string;
+  roomCode: string;
+  latestContent: string;
+  status: "unknown" | "available" | "reserved" | "rented";
+  sourceGroups: Array<{ id: string; name: string }>;
+  destinations: SentRoomDestination[];
+  sentCount: number;
+  lastSentAt: number;
+}
+
+export type LocationRuleType = "duong" | "ngo" | "phuong" | "dia-danh";
+export type LocationRuleSource = "osm" | "manual" | "alias";
+
+export interface LocationRule {
+  id: string;
+  name: string;
+  normalizedName?: string;
+  type: LocationRuleType;
+  routingKeys: string[];
+  enabled: boolean;
+  source: LocationRuleSource;
+  note?: string;
+  updatedAt?: number;
+}
+
+export interface OsmPreviewRow {
+  name: string;
+  type: LocationRuleType;
+  routingKeys: string[];
+  source: "osm";
 }

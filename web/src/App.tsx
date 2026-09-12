@@ -10,10 +10,13 @@ import { SourceGroupsPanel, AreasPanel } from "./components/ConfigPanels";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { LogsPanel, QrOverlay, SessionPanel } from "./components/LogsSession";
 import { ScanReviewPanel } from "./components/ScanReview";
+import { LocationRulesPanel } from "./components/LocationRulesPanel";
 import { AutoModeButton } from "./components/AutoModeButton";
+import { SentRoomSearch } from "./features/sent-message-index/SentRoomSearch";
 
 export default function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
+  const [configError, setConfigError] = useState(false);
   const [status, setStatus] = useState<StatusData | null>(null);
   const [conn, setConn] = useState<"off" | "on">("off");
   const [qr, setQr] = useState<string | null>(null);
@@ -48,18 +51,22 @@ export default function App() {
     }
   }, []);
 
+  const loadInitialConfig = useCallback(async () => {
+    setConfigError(false);
+    try {
+      const response = await api.config();
+      setConfig(response.config);
+    } catch (error) {
+      console.error("Không tải được config", error);
+      setConfigError(true);
+    }
+  }, []);
+
   // load ban đầu
   useEffect(() => {
-    (async () => {
-      try {
-        const c = await api.config();
-        setConfig(c.config);
-      } catch (e) {
-        console.error("Không tải được config", e);
-      }
-      refreshStatus();
-    })();
-  }, [refreshStatus]);
+    void loadInitialConfig();
+    void refreshStatus();
+  }, [loadInitialConfig, refreshStatus]);
 
   // poll status 5s
   useEffect(() => {
@@ -136,8 +143,19 @@ export default function App() {
 
 
   if (!config) {
+    if (configError) {
+      return (
+        <main className="container startup-state">
+          <section className="panel" role="alert">
+            <h1>Không kết nối được backend</h1>
+            <p className="hint">Hãy chạy <code>npm start</code> ở thư mục zaloSALE, sau đó thử lại.</p>
+            <button className="primary" onClick={() => void loadInitialConfig()}>Thử lại</button>
+          </section>
+        </main>
+      );
+    }
     return (
-      <div className="container" style={{ paddingTop: 40, textAlign: "center", color: "var(--muted)" }}>
+      <div className="container startup-state" role="status">
         Đang tải cấu hình...
       </div>
     );
@@ -157,7 +175,7 @@ export default function App() {
           <span className="conn-text">{conn === "on" ? (loggedIn ? "bot đã đăng nhập" : "chưa đăng nhập") : "mất kết nối"}</span>
           <AutoModeButton
             mode={config.mode}
-            hasDestinations={config.areas.some((area) => Boolean(area.groupLink.trim()))}
+            hasDestinations={config.areas.some((area) => Boolean(area.groupLink.trim() || area.id?.trim()))}
             onChange={async (next) => {
               await api.control({ action: "mode", mode: next });
               setConfig((c) => (c ? { ...c, mode: next } : c));
@@ -199,9 +217,13 @@ export default function App() {
           <>
             <SourceGroupsPanel config={config} onSave={saveConfig} />
 
-            <ScanReviewPanel defaultDays={3} />
+            <ScanReviewPanel defaultDays={3} areas={config.areas} sourceGroups={config.sourceGroups} />
+
+            <SentRoomSearch />
 
             <AreasPanel config={config} onSave={saveConfig} />
+
+            <LocationRulesPanel areas={config.areas} />
 
             <div className="panel" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontWeight: 700, fontSize: 15 }}>⚙ Cài đặt xử lý tin</span>

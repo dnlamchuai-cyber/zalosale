@@ -92,7 +92,7 @@ export function SettingsPanel({ config, onSave }: { config: AppConfig; onSave: (
       <div className="row">
         <label className="chk" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
           <input type="checkbox" checked={form.removePercent} onChange={(e) => set("removePercent", e.target.checked)} />
-          Xoá mọi dòng chứa % hoa hồng (vd “30%”)
+          Xoá nguyên dòng chứa % hoa hồng (vd “🌹 12th: 30%”)
         </label>
         <label className="chk" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
           <input type="checkbox" checked={form.removePrice} onChange={(e) => set("removePrice", e.target.checked)} />
