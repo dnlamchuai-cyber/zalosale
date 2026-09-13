@@ -19,10 +19,15 @@ const DEFAULT_FORWARD = {
   maxBatchItems: 10,
   maxWaitMs: 120000,
   sendDelayMs: 500,
+  parallelSends: 1,
+  skipTextOnly: true,
   retries: 1,
   historyGapMs: 120000,
   imageMaxDim: 1600,
   imageQuality: 80,
+  sendTimeoutMs: 60000,
+  errorPauseThreshold: 5,
+  errorPauseMs: 60000,
 };
 const CONTACT_FIELD_LIMIT = 2000;
 const CONTACT_FIELDS = ["admins", "deputies", "supportGroup", "note"];
@@ -115,5 +120,7 @@ function validate(config) {
   });
   const f = config.forward;
   if (f.maxBatchItems < 1) f.maxBatchItems = 1;
+  f.parallelSends = Math.min(2, Math.max(1, Math.floor(Number(f.parallelSends) || 1)));
+  f.skipTextOnly = f.skipTextOnly !== false;
   if (f.windowMs < 500) logger.warn("config: forward.windowMs quá nhỏ, có thể gom thiếu ảnh");
 }

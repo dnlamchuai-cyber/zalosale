@@ -29,6 +29,8 @@ const STATUS_LABELS = {
   duplicate: "Trùng",
   error: "Lỗi",
   undetermined: "Chưa xác định",
+  no_images: "Không ảnh/video · bỏ qua",
+  no_opening: "Không có tin mở · bỏ qua",
 } as const;
 
 const STATUS_COLORS = {
@@ -37,6 +39,8 @@ const STATUS_COLORS = {
   duplicate: { background: "#fef3c7", color: "#92400e" },
   error: { background: "#fee2e2", color: "#b91c1c" },
   undetermined: { background: "#e0e7ff", color: "#3730a3" },
+  no_images: { background: "#f3f4f6", color: "#6b7280" },
+  no_opening: { background: "#f3f4f6", color: "#6b7280" },
 } as const;
 
 const ROUTE_REASON_LABELS: Record<string, string> = {
@@ -76,7 +80,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
   const [showTable, setShowTable] = useState(true);
   const [ruleDrafts, setRuleDrafts] = useState<Record<string, { name: string; routingKey: string }>>({});
   const {
-    sourceFilter, setSourceFilter, keywordFilter, setKeywordFilter, contentFilter, setContentFilter,
+    sourceFilter, setSourceFilter, keywordFilter, setKeywordFilter, statusFilter, setStatusFilter, contentFilter, setContentFilter,
     mediaFilter, setMediaFilter, commissionFilter, setCommissionFilter,
     priceMin, setPriceMin, priceMax, setPriceMax, commissionMin, setCommissionMin,
     sort, setSort, filteredEntries, resetFilters,
@@ -84,7 +88,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
 
   useEffect(() => {
     setPage(0);
-  }, [sourceFilter, keywordFilter, contentFilter, mediaFilter, commissionFilter, priceMin, priceMax, commissionMin, sort]);
+  }, [sourceFilter, keywordFilter, statusFilter, contentFilter, mediaFilter, commissionFilter, priceMin, priceMax, commissionMin, sort]);
 
   useEffect(() => {
     api.control({ action: "scanState" }).then((response) => {
@@ -161,12 +165,13 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
     }
   };
 
-  const sendSelected = async () => {
-    if (!scanId || !selected.size) return;
+  const sendSelected = async (overrideIndexes?: number[]) => {
+    const indexes = [...(overrideIndexes ?? [...selected])].sort((a, b) => a - b);
+    if (!scanId || !indexes.length) return;
     setBusy(true);
     setSending(true);
     try {
-      const r = (await api.control({ action: "forwardSel", scanId, indexes: [...selected].sort((a, b) => a - b) })) as { ok: true; sent: number; failed?: number; stopped?: boolean; posts?: ScanPost[]; progress?: ScanProgress | null };
+      const r = (await api.control({ action: "forwardSel", scanId, indexes })) as { ok: true; sent: number; failed?: number; stopped?: boolean; posts?: ScanPost[]; progress?: ScanProgress | null };
       if (r.posts) setPosts(r.posts);
       if (r.progress) setProgress(r.progress);
       setMsg(r.stopped ? { t: `Đã dừng sau cụm ${r.progress?.current || 0}/${r.progress?.total || 0}`, k: "ok" } : r.failed ? { t: `Đã gửi ${r.sent} bài, ${r.failed} bài lỗi — xem cột Trạng thái`, k: "err" } : { t: `✓ Đã đưa ${r.sent} bài vào hàng đợi gửi — xem Nhật ký`, k: "ok" });
@@ -180,7 +185,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
   };
 
   const sendAll = async () => {
-    if (!scanId || !posts.some((post) => post.status !== "sent")) return;
+    if (!scanId || !posts.some((post) => post.status !== "sent" && post.status !== "no_images" && post.status !== "no_opening")) return;
     setBusy(true);
     setSending(true);
     try {
@@ -314,9 +319,18 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
     }
   };
 
+  const failedCount = posts.filter((post) => post.status === "error").length;
+
+  const sendFailed = async () => {
+    const indexes = posts.flatMap((post, index) => (post.status === "error" ? [index] : []));
+    if (!indexes.length) return;
+    setSelected(new Set(indexes));
+    await sendSelected(indexes);
+  };
+
   const totalPages = Math.max(1, Math.ceil(filteredEntries.length / SCAN_PAGE_SIZE));
   const currentPage = Math.min(page, totalPages - 1);
-  const unsentCount = posts.filter((post) => post.status !== "sent").length;
+  const unsentCount = posts.filter((post) => post.status !== "sent" && post.status !== "no_images" && post.status !== "no_opening").length;
   const pageEntries = filteredEntries.slice(currentPage * SCAN_PAGE_SIZE, (currentPage + 1) * SCAN_PAGE_SIZE);
   const allChecked = pageEntries.length > 0 && pageEntries.every(({ index }) => selected.has(index));
 
@@ -382,12 +396,17 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
         <>
           <div className="divider" />
           <div className="row" style={{ marginTop: 8 }}>
-            <button className="mini" onClick={sendSelected} disabled={busy || !selected.size}>
+            <button className="mini" onClick={() => { void sendSelected(); }} disabled={busy || !selected.size}>
               📤 Gửi tin đã chọn ({selected.size})
             </button>
             <button className="mini primary" onClick={sendAll} disabled={busy || !unsentCount}>
               📤 Gửi tất cả ({unsentCount})
             </button>
+            {failedCount > 0 && (
+              <button className="mini" onClick={sendFailed} disabled={busy}>
+                ↻ Gửi lại {failedCount} tin lỗi
+              </button>
+            )}
             <button className="mini" onClick={() => setSelected(new Set(filteredEntries.map(({ index }) => index)))} disabled={busy || !filteredEntries.length}>
               ☑ Chọn {filteredEntries.length} bài đang xem
             </button>
@@ -411,6 +430,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
           <ScanFilters
             sources={[...new Set(posts.map((post) => post.name))]} keywords={[...new Set(posts.flatMap((post) => post.destinationNames))]}
             source={sourceFilter} onSource={setSourceFilter} keyword={keywordFilter} onKeyword={setKeywordFilter}
+            status={statusFilter} onStatus={setStatusFilter}
             query={contentFilter} onQuery={setContentFilter} media={mediaFilter} onMedia={setMediaFilter}
             commission={commissionFilter} onCommission={setCommissionFilter}
             priceMin={priceMin} onPriceMin={setPriceMin} priceMax={priceMax} onPriceMax={setPriceMax}

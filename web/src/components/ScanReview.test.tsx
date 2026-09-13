@@ -68,19 +68,24 @@ describe("ScanReviewPanel", () => {
       }, {
         id: "post-2", tid: "source-2", name: "Nguồn khác", clean: "Mã R152",
         areaName: null, destinationNames: [], kw: "", photos: 0, photoUrls: [], price: null,
-        commissionPercent: null, inPriceRange: true, ts: Date.now() - 1000, clusterItems: [],
+        commissionPercent: null, inPriceRange: true, ts: Date.now() - 1000, clusterItems: [], status: "undetermined" as const,
       }],
     });
     render(<ScanReviewPanel defaultDays={1} areas={[{ keywords: ["cau giay"], groupLink: "", id: "dest-cau-giay" }]} />);
     fireEvent.click(screen.getByRole("button", { name: "🔍 Quét tin" }));
 
     expect(await screen.findByText("40%")).toBeInTheDocument();
-    expect(screen.getAllByText("Chưa gửi")).toHaveLength(2);
+    expect(screen.getAllByText("Chưa gửi").length).toBeGreaterThan(1);
+    expect(screen.getAllByText("Chưa xác định").length).toBeGreaterThan(1);
     expect(screen.getByText("Cầu Giấy · Dịch Vọng")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Lọc ảnh"), { target: { value: "yes" } });
     expect(screen.getByText("Đang xem 1/2 bài. “Gửi tất cả” vẫn gửi toàn bộ kết quả quét.")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Lọc từ khóa đích"), { target: { value: "cau giay" } });
     expect(screen.getByText("Đang xem 1/2 bài. “Gửi tất cả” vẫn gửi toàn bộ kết quả quét.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Xóa lọc" }));
+    fireEvent.change(screen.getByLabelText("Lọc trạng thái"), { target: { value: "undetermined" } });
+    expect(screen.getByText("Đang xem 1/2 bài. “Gửi tất cả” vẫn gửi toàn bộ kết quả quét.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Xóa lọc" }));
     fireEvent.click(screen.getByRole("button", { name: "Xem ảnh 1 của tin Mã R151" }));
     expect(screen.getByRole("dialog", { name: "Xem ảnh phòng" })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "Ảnh phòng 1/1" })).toBeInTheDocument();
@@ -110,7 +115,7 @@ describe("ScanReviewPanel", () => {
       .mockResolvedValueOnce({ ok: true, sent: 1, posts: [] });
     render(<ScanReviewPanel defaultDays={1} />);
     fireEvent.click(screen.getByRole("button", { name: "🔍 Quét tin" }));
-    expect(await screen.findByText("Chưa gửi")).toBeInTheDocument();
+    expect((await screen.findAllByText("Chưa gửi")).length).toBeGreaterThan(1);
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
     fireEvent.click(screen.getByRole("button", { name: "📤 Gửi tin đã chọn (1)" }));
     expect(await screen.findByText("✓ Đã đưa 1 bài vào hàng đợi gửi — xem Nhật ký")).toBeInTheDocument();
@@ -264,7 +269,7 @@ describe("ScanReviewPanel", () => {
     render(<ScanReviewPanel defaultDays={1} />);
     fireEvent.click(screen.getByRole("button", { name: "🔍 Quét tin" }));
     await screen.findByText("Mã SENT01");
-    expect(screen.getByText("Đã gửi")).toBeInTheDocument();
+    expect(screen.getAllByText("Đã gửi").length).toBeGreaterThan(1);
     expect(screen.getByRole("button", { name: "📤 Gửi tất cả (0)" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "↻ Gửi lại" }));
     await waitFor(() => expect(control).toHaveBeenCalledWith(
@@ -272,8 +277,7 @@ describe("ScanReviewPanel", () => {
     ));
   });
 
-  it("video lỗi hiện số ảnh đã gửi và nút gửi lại riêng video", async () => {
-    const post = {
+  it("video lỗi hiện số ảnh đã gửi và nút gửi lại riêng video", async () => {    const post = {
       id: "post-video", tid: "source", name: "Kho phòng", clean: "Mã VID01",
       areaName: "cau giay", destinationNames: ["cau giay"], kw: "cau giay",
       photos: 19, photoUrls: ["http://x/1.jpg"], price: null, commissionPercent: null, inPriceRange: true,
@@ -291,6 +295,32 @@ describe("ScanReviewPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Gửi lại video" }));
     await waitFor(() => expect(control).toHaveBeenCalledWith(
       expect.objectContaining({ action: "forwardSel", scanId: "scan-vid", indexes: [0], videoOnly: true }),
+    ));
+  });
+
+  it("nút gửi lại tất cả tin lỗi chỉ gửi đúng tin lỗi", async () => {
+    const errPost = {
+      id: "post-err", tid: "source", name: "Kho phòng", clean: "Mã ERR01",
+      areaName: "cau giay", destinationNames: ["cau giay"], kw: "cau giay",
+      photos: 0, photoUrls: [], price: null, commissionPercent: null, inPriceRange: true,
+      ts: Date.now(), clusterItems: [], status: "error" as const,
+    };
+    const okPost = {
+      id: "post-ok", tid: "source", name: "Kho phòng", clean: "Mã OK01",
+      areaName: "cau giay", destinationNames: ["cau giay"], kw: "cau giay",
+      photos: 0, photoUrls: [], price: null, commissionPercent: null, inPriceRange: true,
+      ts: Date.now(), clusterItems: [], status: "sent" as const,
+    };
+    control
+      .mockResolvedValueOnce({ ok: true, scan: null })
+      .mockResolvedValueOnce({ ok: true, scanId: "scan-err", range: "05/09/2026", groups: 1, total: 2, added: 2, posts: [errPost, okPost] })
+      .mockResolvedValueOnce({ ok: true, sent: 1 });
+    render(<ScanReviewPanel defaultDays={1} />);
+    fireEvent.click(screen.getByRole("button", { name: "🔍 Quét tin" }));
+    await screen.findByText("Mã ERR01");
+    fireEvent.click(screen.getByRole("button", { name: "↻ Gửi lại 1 tin lỗi" }));
+    await waitFor(() => expect(control).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "forwardSel", scanId: "scan-err", indexes: [0] }),
     ));
   });
 });

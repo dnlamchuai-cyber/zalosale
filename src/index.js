@@ -51,6 +51,25 @@ async function startRuntime(server, state, config) {
     async ({ destinationId, content }) => state.sentMessageIndex.hasSent({ destinationId, content }),
     closingStickerStore,
   );
+  state.resendSentRoom = async (roomId) => {
+    if (!state.bot) return { sent: 0, error: "Bot chưa sẵn sàng" };
+    const saved = state.sentMessageIndex.getResendPayload(roomId);
+    if (!saved) return { sent: 0, error: "Không tìm thấy tin trong kho" };
+    const outcome = await forwarder.enqueue({
+      threadId: saved.sourceGroupId || "sent-room",
+      items: [{ data: { content: saved.sentContent } }],
+      source: "manual-resend",
+      resendDestinations: saved.destinations.map((destination) => ({
+        id: destination.id,
+        keywords: [destination.name],
+      })),
+      forceResend: true,
+    });
+    return {
+      sent: Number(outcome?.destinations || 0),
+      failed: outcome?.error ? 1 : 0,
+    };
+  };
   const batcher = new Batcher({ ...config.forward, areas: config.areas, defaultArea: config.defaultArea, rules: loadRulesSnapshot() });
 
   batcher.on("building-full", (notice) => {
@@ -155,6 +174,8 @@ function createRelogin(server, state, config) {
 async function main() {
   const config = loadConfig();
   const sentMessageIndex = createSentMessageIndex();
+  const { createCustomerSearchService } = await import("./features/customer-search/service.js");
+  const customerSearch = createCustomerSearchService();
   // Seed kho địa danh lần đầu (seed + alias phường); lần sau giữ nguyên.
   try {
     const { ensureSeeded } = await import("./features/location-rules/service.js");
@@ -171,7 +192,7 @@ async function main() {
     mode: config.mode,
     knownSources: [],
   };
-  const state = { config, status, bot: null, api: null, accountInfo: null, sentMessageIndex };
+  const state = { config, status, bot: null, api: null, accountInfo: null, sentMessageIndex, customerSearch };
 
   const server = new ApiServer({ port: config.ui?.port ?? 3000, ctx: () => state });
   await server.start();
@@ -208,6 +229,7 @@ async function main() {
       // bỏ qua
     }
     sentMessageIndex.close();
+    customerSearch.close();
     logger.info("Đã tắt bot. Hẹn gặp lại!");
     process.exit(0);
   };

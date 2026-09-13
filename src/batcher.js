@@ -1,6 +1,6 @@
 // AI: OpenAI Codex
 // WHY: Chỉ đưa tin mở cụm dài ở cuối lên đầu, còn mọi tin/ảnh khác giữ đúng thứ tự gửi.
-// SPEC: SPEC-005 — sticker là ranh giới ưu tiên; tin mở cụm cuối có thể gộp các phòng trước đó.
+// SPEC: SPEC-005 — sticker lỗi người dùng không tự tách cụm; tin mở mới vẫn là ranh giới.
 import { EventEmitter } from "events";
 import { classifyAreasDetailed } from "./classifier.js";
 import { isStickerMessage } from "./closing-sticker.js";
@@ -32,6 +32,11 @@ export function isRoomLabel(text) {
   const hasRoom = /(?:^|[\s,;-])(?:p|phong)\s*\d{2,4}\b/.test(normalized);
   const hasPosition = /(?:^|\s)(?:truc|tang)\s*[a-z0-9]/.test(normalized);
   return hasPrice || hasRoom || hasPosition;
+}
+
+export function isOpeningSegment(items, metadata = null) {
+  const segmentType = metadata?.segmentType ?? items?.batchMeta?.segmentType;
+  return segmentType === "building" || segmentType === "lead";
 }
 
 export function isCommissionHeader(text) {
@@ -81,8 +86,8 @@ function newState(threadId) {
     sequence: 0,
     contextSequence: 0,
     stickerDelimited: false,
-    // WHY: sticker sau cụm mở không xóa ngữ cảnh ngay — chùm ảnh sau sticker vẫn
-    // ăn theo cụm mở; tin chữ tới sẽ chốt cụm cũ rồi xử lý độc lập (vote 2026-09-11).
+    // WHY: sticker thường bị gửi nhầm làm dấu ngăn cách; giữ ngữ cảnh để
+    // nhãn phòng, mô tả ngắn và ảnh sau nó vẫn nhập vào cụm trước.
     contextStale: false,
     timer: null,
   };
@@ -109,7 +114,8 @@ export class Batcher extends EventEmitter {
     this.batches.set(id, state);
     clearTimeout(state.timer);
     if (isStickerMessage(item?.data ?? item)) {
-      this.startStickerSegment(state);
+      this.startStickerSegment(state, item);
+      this.schedule(state);
       return;
     }
     const text = itemText(item);
@@ -118,15 +124,17 @@ export class Batcher extends EventEmitter {
       this.markBuildingFull(state, fullNotice);
       return;
     }
-    if (state.contextStale && text) {
-      // Tin chữ sau sticker: chốt chùm ảnh của cụm cũ (giữ ngữ cảnh), rồi xử lý tin mới độc lập.
+    const building = text ? describeBuilding(text, this.areas, this.rules) : { isBuilding: false, destinations: [], routeVia: null, matchedRules: [] };
+    const startsBuilding = building.isBuilding;
+    if (state.contextStale && text && (startsBuilding || isCommissionHeader(text))) {
+      // Chỉ tin mở/hoa hồng mới chốt cụm trước; nhãn phòng và phần mô tả ngắn
+      // sau sticker vẫn thuộc cụm đó (người gửi thường chèn sticker nhầm).
       this.flushOpen(state);
       state.buildingContext = null;
       state.buildingKey = null;
       state.contextStale = false;
     }
-    const building = text ? describeBuilding(text, this.areas, this.rules) : { isBuilding: false, destinations: [], routeVia: null, matchedRules: [] };
-    const startsBuilding = building.isBuilding;
+    const continuesStickerSegment = state.contextStale && Boolean(text) && !startsBuilding && !isCommissionHeader(text);
     if (state.fullBuildingKey) {
       const sameBuilding = !startsBuilding
         || (buildingKeyFromText(text) === state.fullBuildingKey
@@ -138,11 +146,13 @@ export class Batcher extends EventEmitter {
       state.fullBuildingKey = null;
       state.fullBuildingNotice = null;
     }
-    if (text && (hasContactOrLink(text) || text.length >= OPENING_MESSAGE_MIN_LENGTH) && !startsBuilding) {
+    if (text && (hasContactOrLink(text) || text.length >= OPENING_MESSAGE_MIN_LENGTH)
+      && !startsBuilding && !continuesStickerSegment) {
       this.schedule(state);
       return;
     }
-    if (startsBuilding) this.startBuilding(state, item, building);
+    if (continuesStickerSegment) this.appendItem(state, item);
+    else if (startsBuilding) this.startBuilding(state, item, building);
     else if (text && isCommissionHeader(text)) this.startLead(state, item);
     // Khi đã có tòa đang mở, P101/P404 và mọi ảnh sau nó chỉ là phần của
     // cùng cụm; không được xem chúng là một tin mở cụm mới.
@@ -187,24 +197,23 @@ export class Batcher extends EventEmitter {
     state.active = { segmentType: "building", items };
   }
 
-  startStickerSegment(state) {
+  startStickerSegment(state, item) {
     const openHasText =
       (state.active?.items || []).some((item) => itemText(item)) ||
       state.pending.some((item) => itemText(item)) ||
       state.roomPrefix.some((items) => items.some((item) => itemText(item)));
     // Sticker giữa chùm chỉ-có-ảnh: bỏ qua, gom tiếp (vote 2026-09-11).
-    // Sticker kề tin có chữ vẫn là ranh giới hết bài (SPEC-005).
     // Giữ cờ stickerDelimited để tin mở tới sau vẫn được đưa lên đầu (BIZ-004 BR2).
     if (!openHasText) {
       state.stickerDelimited = true;
       return;
     }
-    this.flushOpen(state);
-    // GIỮ buildingContext cho chùm ảnh sau sticker (ăn theo cụm mở); tin chữ
-    // tới sẽ chốt cụm cũ (xem add()) rồi xử lý độc lập.
-    if (state.buildingContext) state.contextStale = true;
-    state.active = null;
-    state.pending = [];
+    // Giữ sticker trong cụm chữ ngay trước; nhãn phòng và album ảnh tiếp theo
+    // sẽ nối tiếp cụm này cho tới khi gặp tin mở/hoa hồng mới.
+    if (state.active?.items.length) state.active.items.push(item);
+    else if (state.pending.length) state.pending.push(item);
+    else if (state.roomPrefix.length) state.roomPrefix[state.roomPrefix.length - 1].push(item);
+    state.contextStale = true;
     state.stickerDelimited = true;
   }
 
@@ -224,6 +233,20 @@ export class Batcher extends EventEmitter {
       leadingPhotos = state.active.items;
       state.active = null;
     }
+    // Một dòng kiểu "P101 1n1k 8tr" chỉ là nhãn/phần tiếp theo, không phải
+    // tin mở cụm. Khi chưa có tin mở thật, giữ nó trong cụm đang có để ảnh
+    // trước đó (kể cả qua sticker) không bị tách thành bài riêng.
+    const isSimpleRoomLabel = !/[\r\n]/.test(itemText(item));
+    if (isSimpleRoomLabel && !state.buildingContext && state.active?.items.length
+      && (state.active.segmentType === "generic" || state.active.segmentType === "room")) {
+      state.active.items.push(...leadingPhotos, item);
+      state.active.segmentType = "room";
+      return;
+    }
+    if (isSimpleRoomLabel && !state.buildingContext && state.roomPrefix.length && !state.active) {
+      state.roomPrefix[state.roomPrefix.length - 1].push(...leadingPhotos, item);
+      return;
+    }
     if (!state.buildingContext && state.active?.segmentType === "room") {
       state.roomPrefix.push(state.active.items);
       state.active = { segmentType: "room", items: [...leadingPhotos, item] };
@@ -235,6 +258,10 @@ export class Batcher extends EventEmitter {
   }
 
   appendItem(state, item) {
+    if (state.contextStale && !state.active && !state.buildingContext && state.roomPrefix.length) {
+      state.roomPrefix[state.roomPrefix.length - 1].push(item);
+      return;
+    }
     if (state.active?.segmentType === "lead") {
       state.active.items.push(item);
       return;

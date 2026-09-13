@@ -7,13 +7,14 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SentRoomSearch } from "./SentRoomSearch";
 
-const { sentRooms, clearSentRooms } = vi.hoisted(() => ({ sentRooms: vi.fn(), clearSentRooms: vi.fn() }));
-vi.mock("../../api", () => ({ api: { sentRooms, clearSentRooms } }));
+const { sentRooms, clearSentRooms, resendSentRoom } = vi.hoisted(() => ({ sentRooms: vi.fn(), clearSentRooms: vi.fn(), resendSentRoom: vi.fn() }));
+vi.mock("../../api", () => ({ api: { sentRooms, clearSentRooms, resendSentRoom } }));
 
 describe("SentRoomSearch", () => {
   beforeEach(() => {
     sentRooms.mockReset();
     clearSentRooms.mockReset().mockResolvedValue({ ok: true, clearedRooms: 9 });
+    resendSentRoom.mockReset().mockResolvedValue({ ok: true, sent: 2, failed: 0 });
     sentRooms.mockResolvedValue({
       ok: true,
       rooms: Array.from({ length: 9 }, (_, index) => ({
@@ -72,5 +73,16 @@ describe("SentRoomSearch", () => {
 
     await waitFor(() => expect(clearSentRooms).toHaveBeenCalledOnce());
     expect(screen.getByText(/Chưa có tin phù hợp/)).toBeInTheDocument();
+  });
+
+  it("gửi lại một tin từ kho tới các nhóm đã lưu sau khi xác nhận", async () => {
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    render(<SentRoomSearch />);
+    await screen.findByText("R151");
+
+    fireEvent.click(screen.getByRole("button", { name: "Gửi lại R151" }));
+
+    await waitFor(() => expect(resendSentRoom).toHaveBeenCalledWith("room-1"));
+    expect(screen.getByRole("status")).toHaveTextContent(/Gửi lại xong: 2 nhóm/);
   });
 });

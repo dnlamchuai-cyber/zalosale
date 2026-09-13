@@ -51,6 +51,14 @@ try {
   assert.equal(byCode[0].sourceGroups[0].name, "Kho Cầu Giấy");
   assert.equal(byCode[0].destinations.length, 2);
 
+  const resendPayload = index.getResendPayload(byCode[0].id);
+  assert.equal(resendPayload.sentContent, baseDelivery.sentContent);
+  assert.deepEqual(resendPayload.destinations, [
+    { id: "dest-b", name: "Khách thuê Cầu Giấy" },
+    { id: "dest-c", name: "Phòng Hà Nội" },
+  ]);
+  assert.equal(index.getResendPayload("missing-room"), null);
+
   const withoutAccents = index.search({ query: "trung kinh", limit: 20 });
   assert.equal(withoutAccents.length, 1);
   assert.equal(withoutAccents[0].sentCount, 2);
@@ -114,6 +122,20 @@ try {
 
   assert.equal(deliveryRows.length, 2);
   assert.deepEqual(new Set(deliveryRows.map((row) => row.room_id)), new Set([firstRoomId, secondRoomId]));
+
+  const addressRoomId = batchRepository.recordDelivery({
+    roomCode: "R203",
+    address: "Địa chỉ: Ga Hà Đông",
+    sourceGroup: { id: "source-a", name: "Nguồn A" },
+    destinationGroup: { id: "dest-a", name: "Đích A" },
+    originalContent: "R203",
+    sentContent: "R203",
+    normalizedSearch: "r203",
+    contentHash: "hash-r203",
+    sentAt: 30,
+    imageTotal: 0,
+  });
+  assert.equal(batchRepository.roomRows("", 10).find((row) => row.id === addressRoomId).address, "Địa chỉ: Ga Hà Đông");
   batchRepository.close();
   batchRepository = null;
 } finally {

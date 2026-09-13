@@ -35,7 +35,7 @@ test("config accepts explicit boolean catch-all and rejects ambiguous values", (
 
 function setup(areas = [district, aggregate], overrides = {}) {
   const sent = [];
-  const config = parseConfig({ sourceGroups: ["source"], areas: structuredClone(areas), forward: { sendDelayMs: 0 }, ...overrides });
+  const config = parseConfig({ sourceGroups: ["source"], areas: structuredClone(areas), forward: { sendDelayMs: 0, skipTextOnly: false }, ...overrides });
   const forwarder = new Forwarder({ sendMessage: async (_message, id) => { sent.push(id); } }, config);
   return { forwarder, sent };
 }

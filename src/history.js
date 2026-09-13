@@ -1,6 +1,7 @@
 import { logger } from "./logger.js";
-import { Batcher } from "./batcher.js";
+import { Batcher, isMediaItem, isRoomLabel } from "./batcher.js";
 import { buildingNoticeMatchesText } from "./full-building.js";
+import { isStickerMessage } from "./closing-sticker.js";
 import { loadRulesCached } from "./features/location-rules/repository.js";
 
 function tsOf(msg) {
@@ -221,7 +222,28 @@ export async function scanGroupRange(api, threadId, range, forwarder, config) {
 }
 
 function batchHasText(items) {
-  return (items || []).some((it) => typeof it?.data?.content === "string" && it.data.content.trim());
+  return (items || []).some((it) => typeof it?.data?.content === "string"
+    && it.data.content.trim()
+    && !isStickerMessage(it?.data ?? it));
+}
+
+function batchHasOnlyRoomLabels(items) {
+  const segmentType = items?.batchMeta?.segmentType;
+  if (segmentType === "building" || segmentType === "lead") return false;
+  if ((items || []).some((it) => isMediaItem(it))) return false;
+  const texts = (items || [])
+    .filter((it) => !isStickerMessage(it?.data ?? it))
+    .map((it) => (typeof it?.data?.content === "string" ? it.data.content.trim() : ""))
+    .filter(Boolean);
+  return texts.length > 0 && texts.every((text) => !/[\r\n]/.test(text) && isRoomLabel(text));
+}
+
+function batchTextIsOnlyRoomLabels(items) {
+  const texts = (items || [])
+    .filter((it) => !isStickerMessage(it?.data ?? it))
+    .map((it) => (typeof it?.data?.content === "string" ? it.data.content.trim() : ""))
+    .filter(Boolean);
+  return texts.length > 0 && texts.every((text) => !/[\r\n]/.test(text) && isRoomLabel(text));
 }
 
 function quoteCliId(item) {
@@ -231,9 +253,11 @@ function quoteCliId(item) {
 }
 
 /**
- * Gắn chùm chỉ-có-ảnh mồ côi sau khi tách cụm (chỉ trong cùng run thời gian):
+ * Gắn chùm chỉ-có-ảnh mồ côi sau khi tách cụm:
  * (a) tin mở reply trỏ ảnh nào → gộp ảnh đó vào cụm mở (tin mở đứng đầu);
- * (b) ảnh lẻ cuối run, sau cụm có chữ → gộp vào cụm chữ trước nó.
+ * (b) ảnh lẻ cuối run, sau cụm có chữ → gộp vào cụm chữ trước nó. Cho phép
+ *     băng qua ranh giới thời gian của history nếu không có cụm chữ nào chen
+ *     giữa, vì Zalo đôi khi trả album thành một run riêng.
  * Không gộp khi có cụm chữ khác đứng sau trong run (thuộc về cụm sau, tránh gửi nhầm).
  */
 export function attachOrphanPhotoBatches(batches, runBounds) {
@@ -268,23 +292,52 @@ export function attachOrphanPhotoBatches(batches, runBounds) {
   // (b) ảnh lẻ cuối run: gộp vào cụm có chữ gần nhất phía trước trong run.
   for (let i = 0; i < batches.length; i++) {
     if (consumed.has(i) || batchHasText(batches[i])) continue;
-    if (runOf(i) < 0) continue;
     let hasTextAfter = false;
-    for (let j = i + 1; j < batches.length && runOf(j) === runOf(i); j++) {
+    let onlyRoomLabelsAfter = true;
+    for (let j = i + 1; j < batches.length; j++) {
       if (!consumed.has(j) && batchHasText(batches[j])) {
         hasTextAfter = true;
-        break;
+        if (!batchTextIsOnlyRoomLabels(batches[j])) onlyRoomLabelsAfter = false;
       }
     }
-    if (hasTextAfter) continue;
+    if (hasTextAfter && !onlyRoomLabelsAfter) continue;
     let host = -1;
-    for (let j = i - 1; j >= 0 && runOf(j) === runOf(i); j--) {
+    for (let j = i - 1; j >= 0; j--) {
       if (consumed.has(j)) continue;
       if (batchHasText(batches[j])) {
         host = j;
         break;
       }
     }
+    if (host < 0) continue;
+    batches[host].push(...batches[i]);
+    consumed.add(i);
+  }
+  return batches.filter((_, i) => !consumed.has(i));
+}
+
+/**
+ * Nhãn phòng một dòng có thể bị xả thành run riêng khi người đăng ngắt quãng.
+ * Không có tin mở cụm thật thì nối nhãn vào bài ngay trước, để ảnh/sticker
+ * của bài đó vẫn được gửi cùng mô tả phòng thay vì tạo một bài mồ côi.
+ */
+export function attachOrphanRoomLabelBatches(batches) {
+  const consumed = new Set();
+  for (let i = 0; i < batches.length; i++) {
+    if (consumed.has(i) || !batchHasOnlyRoomLabels(batches[i])) continue;
+    let host = i - 1;
+    let textHost = -1;
+    while (host >= 0) {
+      if (!consumed.has(host) && batchHasText(batches[host])) {
+        textHost = host;
+        break;
+      }
+      host--;
+    }
+    // Ưu tiên cụm có chữ gần nhất; nếu trước đó chỉ còn album ảnh thì nối
+    // vào album liền trước để không làm mất mô tả phòng một dòng.
+    host = textHost >= 0 ? textHost : i - 1;
+    while (host >= 0 && consumed.has(host)) host--;
     if (host < 0) continue;
     batches[host].push(...batches[i]);
     consumed.add(i);
@@ -321,7 +374,7 @@ export function segmentMessages(
   }
   batcher.flushAll();
   runBounds.push(batches.length);
-  const merged = attachOrphanPhotoBatches(batches, runBounds);
+  const merged = attachOrphanRoomLabelBatches(attachOrphanPhotoBatches(batches, runBounds));
   const activeBatches = merged.filter((items) => {
     const text = items
       .filter((item) => typeof item?.data?.content === "string")

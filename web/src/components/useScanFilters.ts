@@ -23,6 +23,7 @@ export function useScanFilters(posts: ScanPost[]) {
   const [contentFilter, setContentFilter] = useState("");
   const [mediaFilter, setMediaFilter] = useState("");
   const [commissionFilter, setCommissionFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   const [priceMin, setPriceMin] = useState("");
   const [priceMax, setPriceMax] = useState("");
   const [commissionMin, setCommissionMin] = useState("");
@@ -37,6 +38,7 @@ export function useScanFilters(posts: ScanPost[]) {
       const minCommission = commissionMin === "" ? null : Number(commissionMin);
       return (!sourceFilter || post.name === sourceFilter)
         && (!keywordFilter || post.destinationNames.includes(keywordFilter))
+        && (!statusFilter || (post.status ?? "pending") === statusFilter)
         && (!contentFilter || searchable.includes(normalizeSearch(contentFilter)))
         && (!mediaFilter || (mediaFilter === "yes") === ((post.photoUrls?.length ?? 0) > 0))
         && (!commissionFilter || (commissionFilter === "yes") === (post.commissionPercent != null))
@@ -51,11 +53,12 @@ export function useScanFilters(posts: ScanPost[]) {
       if (sort === "price-low") return (left.post.price ?? Infinity) - (right.post.price ?? Infinity);
       if (sort === "commission-high") return (right.post.commissionPercent ?? -1) - (left.post.commissionPercent ?? -1);
       return right.post.ts - left.post.ts;
-    }), [posts, sourceFilter, keywordFilter, contentFilter, mediaFilter, commissionFilter, priceMin, priceMax, commissionMin, sort]);
+    }), [posts, sourceFilter, keywordFilter, statusFilter, contentFilter, mediaFilter, commissionFilter, priceMin, priceMax, commissionMin, sort]);
 
   const resetFilters = () => {
     setSourceFilter("");
     setKeywordFilter("");
+    setStatusFilter("");
     setContentFilter("");
     setMediaFilter("");
     setCommissionFilter("");
@@ -66,7 +69,7 @@ export function useScanFilters(posts: ScanPost[]) {
   };
 
   return {
-    sourceFilter, setSourceFilter, keywordFilter, setKeywordFilter, contentFilter, setContentFilter,
+    sourceFilter, setSourceFilter, keywordFilter, setKeywordFilter, statusFilter, setStatusFilter, contentFilter, setContentFilter,
     mediaFilter, setMediaFilter, commissionFilter, setCommissionFilter,
     priceMin, setPriceMin, priceMax, setPriceMax, commissionMin, setCommissionMin,
     sort, setSort, filteredEntries, resetFilters,

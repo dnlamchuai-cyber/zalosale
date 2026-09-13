@@ -10,6 +10,7 @@ import { readPersistedScanSync, writePersistedScanSync } from "./scan-state.js";
 import { messageIdsOf } from "./forwarder.js";
 import { extractStickerId } from "./closing-sticker.js";
 import { parseFullBuildingNotice } from "./full-building.js";
+import { isOpeningSegment } from "./batcher.js";
 
 const norm = (s) => normalizeText(s);
 /** Khoá so khớp tên nhóm: bỏ emoji/icon/dấu câu, chỉ giữ chữ + số + khoảng trắng */
@@ -587,6 +588,9 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
         }
         const t = Number(items[0]?.data?.ts || items[0]?.ts || 0);
         if (isRepeatedPhotoOnlyCluster(sourcePosts, id, d.clean, d.photoUrls, t)) continue;
+        const hasVideo = items.some((item) => videoUrls(item).length > 0);
+        const hasVisualMedia = d.photoCount > 0 || hasVideo;
+        const hasOpening = isOpeningSegment(items, batchMeta);
         const postId = `${scanId}:${id}:${idx++}`;
         const post = {
           id: postId,
@@ -599,7 +603,7 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
           routingKeys: d.routingKeys || [],
           matchedRules: d.matchedRules || [],
           undetermined: Boolean(d.undetermined),
-          videoStatus: items.some((item) => videoUrls(item).length > 0) ? "pending" : null,
+          videoStatus: hasVideo ? "pending" : null,
           sentImages: 0,
           kw: d.kw,
           clean: (d.clean || "").slice(0, 400),
@@ -608,7 +612,13 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
           price: d.price,
           commissionPercent: parseCommissionPercent(sourceText),
           inPriceRange: d.inPriceRange,
-          status: d.undetermined ? "undetermined" : "pending",
+          status: d.undetermined
+            ? "undetermined"
+            : !hasOpening
+              ? "no_opening"
+              : config.forward.skipTextOnly !== false && !hasVisualMedia
+                ? "no_images"
+                : "pending",
           ts: t,
           clusterItems: items.map((item) => ({
             text: typeof item.data?.content === "string" ? item.data.content.slice(0, 1000) : "",
@@ -674,10 +684,29 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
     if (destinationKeyword && !target) return { sent: 0, error: "Không tìm thấy nhóm đích cho từ khóa này — hãy tải lại cấu hình." };
     const selectedPosts = [...new Set(indexes)]
       .map((index) => ({ post: scan.posts[index], raw: scan.raw.get(scan.posts[index]?.id) }))
-      .filter(({ post, raw }) => post && raw)
+      .filter(({ post, raw }) => {
+        if (!post || !raw) return false;
+        const hasVisualMedia = post.photos > 0 || post.videoStatus === "pending" || post.videoStatus === "sent";
+        const hasText = raw.items.some((item) => typeof item?.data?.content === "string" && item.data.content.trim());
+        const isStandalonePhoto = post.photos > 0 && !post.videoStatus && !hasText;
+        const hasOpening = isOpeningSegment(raw.items, raw.batchMeta);
+        if (config.forward.skipTextOnly !== false && (!hasOpening || !hasVisualMedia || isStandalonePhoto)) {
+          post.status = hasOpening ? "no_images" : "no_opening";
+          return false;
+        }
+        return true;
+      })
       .sort((left, right) => (left.post.ts - right.post.ts) || left.post.id.localeCompare(right.post.id));
+    if (!selectedPosts.length) {
+      persistScan(scan);
+      return { sent: 0, failed: 0, skippedNoVisualMedia: true };
+    }
     let sent = 0;
     let failed = 0;
+    let consecutiveErrors = 0;
+    const errorPauseThreshold = Math.max(2, Number(config.forward.errorPauseThreshold) || 5);
+    const errorPauseMs = Math.max(0, Number(config.forward.errorPauseMs) || 0);
+    const parallelSends = Math.min(2, Math.max(1, Math.floor(Number(config.forward.parallelSends) || 1)));
     manualProgress = {
       running: true,
       current: 0,
@@ -688,39 +717,58 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
       startedAt: Date.now(),
       stopRequested: false,
     };
-    for (const [position, { post, raw }] of selectedPosts.entries()) {
+    for (let start = 0; start < selectedPosts.length; start += parallelSends) {
       if (manualProgress.stopRequested) break;
-      manualProgress.current = position + 1;
-      manualProgress.sourceName = post.name;
-      manualProgress.destinationName = target?.keywords?.[0] || post.destinationNames?.join(", ") || "Chưa có nhóm đích";
-      manualProgress.imageCount = post.photos || 0;
-      logger.info(`Gửi cụm ${position + 1}/${selectedPosts.length} theo thứ tự cũ → mới: ${post.name}`);
-      const outcome = await forwarder.enqueue({
-        threadId: raw.tid,
-        items: raw.items,
-        source: "manual",
-        ...raw.batchMeta,
-        inheritedDestinations: target ? [target] : raw.batchMeta.inheritedDestinations,
-        forceResend,
-        videoOnly,
-      });
-      if (outcome?.sent && !outcome?.error) {
-        // Tin đã gửi ở lại bảng (trạng thái sent) để còn Gửi lại.
-        post.status = "sent";
-        sent++;
-        // Lưu bảng sau mỗi 10 tin để sập server giữa chừng cũng không mất trạng thái.
-        if (sent % 10 === 0) persistScan(scan);
-      } else if (outcome?.error) {
-        post.status = "error";
-        failed++;
-      } else if (outcome?.duplicate && post.status !== "sent") {
-        post.status = "duplicate";
-      }
-      if (outcome?.videoStatus && outcome.videoStatus !== "none") {
-        post.videoStatus = outcome.videoStatus;
-      }
-      if (!videoOnly && outcome?.sent && typeof outcome?.sentImages === "number") {
-        post.sentImages = outcome.sentImages;
+      const batch = selectedPosts.slice(start, start + parallelSends);
+      const outcomes = await Promise.all(batch.map(async ({ post, raw }, offset) => {
+        const position = start + offset;
+        logger.info(`Gửi cụm ${position + 1}/${selectedPosts.length} theo thứ tự cũ → mới: ${post.name}`);
+        return forwarder.enqueue({
+          threadId: raw.tid,
+          items: raw.items,
+          source: "manual",
+          ...raw.batchMeta,
+          inheritedDestinations: target ? [target] : raw.batchMeta.inheritedDestinations,
+          forceResend,
+          videoOnly,
+        });
+      }));
+      manualProgress.current = start + batch.length;
+      const lastPost = batch[batch.length - 1]?.post;
+      manualProgress.sourceName = lastPost?.name || "";
+      manualProgress.destinationName = target?.keywords?.[0] || lastPost?.destinationNames?.join(", ") || "Chưa có nhóm đích";
+      manualProgress.imageCount = lastPost?.photos || 0;
+      for (const [index, outcome] of outcomes.entries()) {
+        const post = batch[index].post;
+        if (outcome?.sent && !outcome?.error) {
+          // Tin đã gửi ở lại bảng (trạng thái sent) để còn Gửi lại.
+          post.status = "sent";
+          sent++;
+          consecutiveErrors = 0;
+          // Lưu bảng sau mỗi 10 tin để sập server giữa chừng cũng không mất trạng thái.
+          if (sent % 10 === 0) persistScan(scan);
+        } else if (outcome?.error) {
+          post.status = "error";
+          failed++;
+          consecutiveErrors++;
+          // Lỗi dồn dập (Zalo chặn/mạng sập) thì nghỉ một lúc rồi gửi tiếp, tránh đốt lượt.
+          if (errorPauseMs > 0 && consecutiveErrors >= errorPauseThreshold) {
+            consecutiveErrors = 0;
+            logger.warn(`Lỗi ${errorPauseThreshold} cụm liên tiếp — nghỉ ${Math.round(errorPauseMs / 1000)}s rồi gửi tiếp`);
+            for (let waited = 0; waited < errorPauseMs; waited += 5000) {
+              if (manualProgress.stopRequested) break;
+              await new Promise((resolve) => setTimeout(resolve, Math.min(5000, errorPauseMs - waited)));
+            }
+          }
+        } else if (outcome?.duplicate && post.status !== "sent") {
+          post.status = "duplicate";
+        }
+        if (outcome?.videoStatus && outcome.videoStatus !== "none") {
+          post.videoStatus = outcome.videoStatus;
+        }
+        if (!videoOnly && outcome?.sent && typeof outcome?.sentImages === "number") {
+          post.sentImages = outcome.sentImages;
+        }
       }
     }
     manualProgress.running = false;
@@ -736,7 +784,7 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
     // Bỏ qua tin đã gửi (muốn gửi lại thì bấm Gửi lại từng tin).
     const indexes = scan.posts
       .map((post, i) => ({ post, i }))
-      .filter(({ post }) => post.status !== "sent")
+      .filter(({ post }) => post.status !== "sent" && post.status !== "no_images")
       .map(({ i }) => i);
     return forwardSelected(scanId, indexes);
   }

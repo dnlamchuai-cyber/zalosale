@@ -42,6 +42,8 @@ assertEq("đọc kích thước PNG để gửi Zalo", imageDimensions(pngHeader
 assertEq("đọc chiều cao PNG để gửi Zalo", imageDimensions(pngHeader)?.height, 480);
 assertEq("file ảnh không hợp lệ không có metadata", imageDimensions(Buffer.from("not-an-image")), null);
 assertEq("cấu hình mới mặc định xoá dòng phần trăm", parseConfig({}).filter.removePercentLines, true);
+assertEq("cấu hình nhận tối đa hai luồng gửi", parseConfig({ forward: { parallelSends: 2 } }).forward.parallelSends, 2);
+assertEq("mặc định không gửi cụm chỉ có chữ", parseConfig({}).forward.skipTextOnly, true);
 let activeDownloads = 0;
 let peakDownloads = 0;
 const parallelResults = await mapWithConcurrency([1, 2, 3, 4], 2, async (value) => {
@@ -110,7 +112,7 @@ const footerApi = makeApi();
 const footerStore = { get: () => ({ id: 123, cateId: 7, type: 1 }) };
 const footerForwarder = new Forwarder(
   footerApi,
-  parseConfig({ sourceGroups: ["source"], areas: [{ id: "dest", matchAll: true }], forward: { sendDelayMs: 0, retries: 0 } }),
+  parseConfig({ sourceGroups: ["source"], areas: [{ id: "dest", matchAll: true }], forward: { sendDelayMs: 0, skipTextOnly: false, retries: 0 } }),
   () => {},
   async () => {},
   async () => false,
@@ -121,7 +123,7 @@ assertEq("sticker tự chọn gửi sau nội dung cụm", footerApi._sent.map((
 const multiUnitFooterApi = makeApi();
 const multiUnitFooterForwarder = new Forwarder(
   multiUnitFooterApi,
-  parseConfig({ sourceGroups: ["source"], areas: [{ id: "dest", matchAll: true }], forward: { sendDelayMs: 0, retries: 0 } }),
+  parseConfig({ sourceGroups: ["source"], areas: [{ id: "dest", matchAll: true }], forward: { sendDelayMs: 0, skipTextOnly: false, retries: 0 } }),
   () => {},
   async () => {},
   async () => false,
@@ -137,7 +139,7 @@ const failedFooterApi = makeApi();
 failedFooterApi.sendSticker = async () => { throw new Error("sticker unavailable"); };
 const failedFooterForwarder = new Forwarder(
   failedFooterApi,
-  parseConfig({ sourceGroups: ["source"], areas: [{ id: "dest", matchAll: true }], forward: { sendDelayMs: 0, retries: 0 } }),
+  parseConfig({ sourceGroups: ["source"], areas: [{ id: "dest", matchAll: true }], forward: { sendDelayMs: 0, skipTextOnly: false, retries: 0 } }),
   () => {},
   async () => {},
   async () => false,
@@ -219,6 +221,7 @@ const CFG = {
     maxBatchItems: 10,
     maxWaitMs: 30000,
     sendDelayMs: 1,
+    skipTextOnly: false,
     retries: 0,
     historyGapMs: 10000,
   },
@@ -462,6 +465,109 @@ assertEq(
   rateLimitSentAt.slice(1).every((sentAt, index) => sentAt - rateLimitSentAt[index] >= 12),
   true,
 );
+
+const twoFlowsApi = makeApi();
+let activeSendFlows = 0;
+let peakSendFlows = 0;
+twoFlowsApi.sendMessage = async (msg, tid, type) => {
+  activeSendFlows++;
+  peakSendFlows = Math.max(peakSendFlows, activeSendFlows);
+  await sleep(25);
+  activeSendFlows--;
+  twoFlowsApi._sent.push({ msg, tid, type });
+};
+const twoFlowsForwarder = new Forwarder(twoFlowsApi, {
+  ...FORWARD_CFG,
+  forward: { ...FORWARD_CFG.forward, parallelSends: 2, sendDelayMs: 0, retries: 0 },
+}, () => {});
+await Promise.all([
+  twoFlowsForwarder.enqueue({ threadId: "two-flow-source", source: "manual", items: [{ data: { content: "Địa chỉ: Hà Đông\nA1" } }, { data: { content: "A2" } }] }),
+  twoFlowsForwarder.enqueue({ threadId: "two-flow-source", source: "manual", items: [{ data: { content: "Địa chỉ: Hà Đông\nB1" } }, { data: { content: "B2" } }] }),
+]);
+assertEq("cùng nhóm đích không gửi song song", peakSendFlows, 1);
+assertEq("cùng nhóm đích giữ liền cụm chữ và ảnh", twoFlowsApi._sent.map(({ msg }) => String(msg).split("\n").at(-1)).join(","), "A1,A2,B1,B2");
+
+const twoDestinationsApi = makeApi();
+let activeDifferentDestinations = 0;
+let peakDifferentDestinations = 0;
+twoDestinationsApi.sendMessage = async (msg, tid, type) => {
+  activeDifferentDestinations++;
+  peakDifferentDestinations = Math.max(peakDifferentDestinations, activeDifferentDestinations);
+  await sleep(25);
+  activeDifferentDestinations--;
+  twoDestinationsApi._sent.push({ msg, tid, type });
+};
+const twoDestinationsForwarder = new Forwarder(twoDestinationsApi, {
+  ...FORWARD_CFG,
+  forward: { ...FORWARD_CFG.forward, parallelSends: 2, sendDelayMs: 0, retries: 0 },
+}, () => {});
+await Promise.all([
+  twoDestinationsForwarder.enqueue({ threadId: "two-dest-source", source: "manual", items: [{ data: { content: "Địa chỉ: Hà Đông\nPhòng A" } }] }),
+  twoDestinationsForwarder.enqueue({ threadId: "two-dest-source", source: "manual", items: [{ data: { content: "Địa chỉ: Ba Đình\nPhòng B" } }] }),
+]);
+assertEq("hai nhóm đích vẫn được gửi song song", peakDifferentDestinations, 2);
+
+const textOnlyApi = makeApi();
+const textOnlyForwarder = new Forwarder(textOnlyApi, parseConfig({
+  sourceGroups: ["source"],
+  areas: [{ id: "text-only-destination", matchAll: true }],
+  forward: { sendDelayMs: 0, retries: 0 },
+}), () => {});
+const textOnlyResult = await textOnlyForwarder.forwardPayload({
+  threadId: "text-only-source",
+  source: "manual",
+  items: [{ data: { content: "Địa chỉ: Hà Đông\nPhòng không có ảnh" } }],
+});
+assertEq("cụm không có ảnh được bỏ qua", textOnlyResult.reason, "incomplete-visual-cluster");
+assertEq("cụm không có ảnh không gọi Zalo", textOnlyApi._sent.length, 0);
+
+const photoOnlyApi = makeApi();
+const photoOnlyForwarder = new Forwarder(photoOnlyApi, parseConfig({
+  sourceGroups: ["source"],
+  areas: [{ id: "photo-only-destination", matchAll: true }],
+  forward: { sendDelayMs: 0, retries: 0 },
+}), () => {});
+const photoOnlyResult = await photoOnlyForwarder.forwardPayload({
+  threadId: "photo-only-source",
+  source: "manual",
+  items: [{ data: { content: { href: "https://example.test/room.jpg" } } }],
+});
+assertEq("cụm chỉ có ảnh không được gửi riêng", photoOnlyResult.reason, "incomplete-visual-cluster");
+assertEq("cụm chỉ có ảnh không gọi Zalo", photoOnlyApi._sent.length, 0);
+
+const photoStickerOnlyApi = makeApi();
+const photoStickerOnlyForwarder = new Forwarder(photoStickerOnlyApi, parseConfig({
+  sourceGroups: ["source"],
+  areas: [{ id: "photo-sticker-only-destination", matchAll: true }],
+  forward: { sendDelayMs: 0, retries: 0 },
+}), () => {});
+const photoStickerOnlyResult = await photoStickerOnlyForwarder.forwardPayload({
+  threadId: "photo-sticker-only-source",
+  source: "manual",
+  items: [
+    { data: { normalUrl: "https://example.test/room.jpg" } },
+    { data: { msgType: "chat.sticker", content: "https://example.test/sticker.webp" } },
+  ],
+});
+assertEq("sticker dạng chuỗi không biến cụm ảnh thành cụm có chữ", photoStickerOnlyResult.reason, "incomplete-visual-cluster");
+assertEq("cụm ảnh kèm sticker chuỗi không gọi Zalo", photoStickerOnlyApi._sent.length, 0);
+
+// Lệnh gửi treo thì timeout thay vì kẹt cả hàng.
+const hangingApi = makeApi();
+hangingApi.sendMessage = async () => new Promise(() => {});
+const hangingForwarder = new Forwarder(hangingApi, {
+  ...FORWARD_CFG,
+  areas: [{ id: "hang-destination", matchAll: true }],
+  forward: { ...FORWARD_CFG.forward, sendDelayMs: 0, retries: 0, sendTimeoutMs: 40 },
+}, () => {});
+const hangingStart = Date.now();
+const hangingResult = await hangingForwarder.enqueue({
+  threadId: "hang-source",
+  items: [{ data: { content: "Tin treo" } }],
+  source: "manual",
+});
+assertEq("lệnh gửi treo vẫn kết thúc", hangingResult.error, true);
+assertEq("timeout không treo hàng (dưới 5s)", Date.now() - hangingStart < 5000, true);
 
 const delayedApi = makeApi();
 const delayedSentAt = [];
@@ -747,6 +853,24 @@ assertEq("forward lỗi trả số bài lỗi để bảng cập nhật trạng 
 assertEq("bảng quét đánh dấu bài lỗi", failingScan.posts[failingIndex]?.status, "error");
 failingBot.stop();
 
+// Lỗi dồn dập thì nghỉ ngắn rồi gửi tiếp, không dừng hàng.
+const pauseApi = makeApi({ history: { g001: srcMsgs }, groupLink: sourceLink, sendOk: false });
+const pauseBot = startBot({
+  api: pauseApi,
+  config: { ...FORWARD_CFG, sourceGroups: [sourceLink], forward: { ...FORWARD_CFG.forward, errorPauseThreshold: 2, errorPauseMs: 20 } },
+  batcher: null,
+  forwarder: new Forwarder(pauseApi, FORWARD_CFG, () => {}),
+  status: { startedAt: new Date(), forwarded: 0, mode: "manual", knownSources: [] },
+});
+await sleep(120);
+const pauseScan = await pauseBot.scanRange("", { fromMs: nowT - 86400000, toMs: nowT + 1000 });
+const pauseStart = Date.now();
+const pauseResult = await pauseBot.forwardSelected(pauseScan.scanId, pauseScan.posts.map((_, i) => i));
+assertEq("lỗi dồn dập vẫn đi hết lượt", pauseResult.failed, pauseScan.posts.length);
+assertEq("mọi bài lỗi đều đánh dấu error", pauseBot.scanState()?.posts.every((p) => p.status === "error"), true);
+assertEq("có nghỉ giữa chừng mà không treo", Date.now() - pauseStart < 10000, true);
+pauseBot.stop();
+
 // scan với lọc tên nhóm
 const scanR2 = await bot.scanRange("nhom link", { fromMs: nowT - 86400000, toMs: nowT + 1000 });
 assertEq("scan lọc tên nhóm trả bài", scanR2.posts?.length > 0, true);
@@ -891,9 +1015,10 @@ stickerSeparated.add("source", { data: { content: "P302 - 9tr5" } });
 stickerSeparated.add("source", { data: { normalUrl: "https://example.test/p302.jpg" } });
 stickerSeparated.add("source", { data: { content: "Địa chỉ: Cầu Giấy. Căn hộ nội thất đầy đủ, phù hợp ở ngay và xem phòng mỗi ngày." } });
 stickerSeparated.add("source", { data: { msgType: "chat.sticker", content: { stickerId: 2 } } });
-assertEq("sticker nguồn luôn bị bỏ khỏi cụm", stickerSeparatedEvents[0]?.items.some((item) => item.data.msgType === "chat.sticker"), false);
+stickerSeparated.flushAll();
+assertEq("sticker sau tin mở được giữ trong cụm trước", stickerSeparatedEvents[0]?.items.some((item) => item.data.msgType === "chat.sticker"), true);
 assertEq("sticker rồi tin dài cuối đưa tin mở cụm lên đầu", stickerSeparatedEvents[0]?.items[0]?.data.content, "Địa chỉ: Cầu Giấy. Căn hộ nội thất đầy đủ, phù hợp ở ngay và xem phòng mỗi ngày.");
-assertEq("sticker giữ nhãn và ảnh phòng sau tin mở cụm", stickerSeparatedEvents[0]?.items.slice(1).map((item) => item.data.content || item.data.normalUrl).join(","), "P302 - 9tr5,https://example.test/p302.jpg");
+assertEq("sticker giữ nhãn và ảnh phòng sau tin mở cụm", stickerSeparatedEvents[0]?.items.slice(1).filter((item) => item.data.msgType !== "chat.sticker").map((item) => item.data.content || item.data.normalUrl).join(","), "P302 - 9tr5,https://example.test/p302.jpg");
 
 const stickerSeparatedHistory = segmentMessages([
   { data: { ts: 1, msgType: "chat.sticker", content: { stickerId: 1 } } },
@@ -918,8 +1043,17 @@ for (let index = 1; index <= 11; index++) {
 }
 stickerSeparatedAlbum.add("source", { data: { content: "Địa chỉ: Cầu Giấy. Căn hộ nội thất đầy đủ, phù hợp ở ngay và xem phòng mỗi ngày." } });
 stickerSeparatedAlbum.add("source", { data: { msgType: "chat.sticker", content: { stickerId: 2 } } });
+stickerSeparatedAlbum.flushAll();
 assertEq("album dài chờ tin mở cụm thay vì flush ở giới hạn cũ", stickerSeparatedAlbumEvents.length, 1);
 assertEq("album dài cũng gửi tin mở cụm trước ảnh", stickerSeparatedAlbumEvents[0]?.items[0]?.data.content, "Địa chỉ: Cầu Giấy. Căn hộ nội thất đầy đủ, phù hợp ở ngay và xem phòng mỗi ngày.");
+
+const stickerTimerBatcher = new Batcher({ windowMs: 10, maxBatchItems: 10, maxWaitMs: 30 });
+const stickerTimerEvents = [];
+stickerTimerBatcher.on("batch", (event) => stickerTimerEvents.push(event));
+stickerTimerBatcher.add("source", { data: { content: "Mô tả phòng có sticker nhầm" } });
+stickerTimerBatcher.add("source", { data: { msgType: "chat.sticker", content: { stickerId: 3 } } });
+await sleep(60);
+assertEq("sticker vẫn tự xả cụm theo timer", stickerTimerEvents[0]?.items.at(-1)?.data.msgType, "chat.sticker");
 
 const lateOpeningCluster = new Batcher({
   windowMs: 10,

@@ -12,3 +12,7 @@ export const SearchSentRoomsSchema = z.object({
 export const ClearSentRoomsSchema = z.object({
   confirmation: z.literal("CLEAR_SENT_ROOMS"),
 });
+
+export const ResendSentRoomParamsSchema = z.object({
+  roomId: z.string().uuid("Mã kho tin không hợp lệ"),
+});

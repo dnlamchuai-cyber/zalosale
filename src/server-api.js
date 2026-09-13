@@ -5,6 +5,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { logger } from "./logger.js";
 import { saveConfig } from "./config.js";
+import { customerSearchRoutes } from "./features/customer-search/route.js";
 import { locationRulesRoutes } from "./features/location-rules/route.js";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -109,6 +110,15 @@ export class ApiServer {
       return clearSentRoomsRoute(req, res);
     });
 
+    this.app.post("/api/sent-rooms/:roomId/resend", async (req, res) => {
+      const { sentMessageIndex, resendSentRoom } = ctx();
+      if (!sentMessageIndex) return res.status(503).json({ ok: false, error: "Kho tin chưa sẵn sàng" });
+      const { resendSentRoomRoute } = await import("./features/sent-message-index/route.js");
+      req.sentMessageIndex = sentMessageIndex;
+      req.resendSentRoom = resendSentRoom;
+      return resendSentRoomRoute(req, res);
+    });
+
     this.app.post("/api/community/check", async (req, res) => {      const { bot, config, api } = ctx();
       if (!bot) return res.status(409).json({ ok: false, error: "Bot chưa sẵn sàng" });
       const apiInst = api ?? bot.api ?? null;
@@ -124,6 +134,8 @@ export class ApiServer {
     } catch (e) {
       logger.warn(`Không đăng ký được location-rules routes: ${e.message}`);
     }
+
+    customerSearchRoutes(this.app, () => ctx().customerSearch);
 
     // ---- Control ----
     this.app.post("/api/control", async (req, res) => {

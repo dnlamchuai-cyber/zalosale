@@ -32,6 +32,8 @@ export function SentRoomSearch() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [clearing, setClearing] = useState(false);
+  const [resendingId, setResendingId] = useState<string | null>(null);
+  const [resendMessage, setResendMessage] = useState("");
 
   const loadRooms = useCallback(async (searchQuery: string) => {
     setLoading(true);
@@ -65,6 +67,21 @@ export function SentRoomSearch() {
       setError((clearError as Error).message || "Không thể xóa kho tin");
     } finally {
       setClearing(false);
+    }
+  }
+
+  async function resendRoom(room: SentRoomSummary) {
+    if (!window.confirm(`Gửi lại tin ${room.roomCode} vào ${room.destinations.length} nhóm đích đã lưu?`)) return;
+    setResendingId(room.id);
+    setResendMessage("");
+    setError("");
+    try {
+      const result = await api.resendSentRoom(room.id);
+      setResendMessage(`Gửi lại xong: ${result.sent} nhóm${result.failed ? `, ${result.failed} lỗi` : ""}.`);
+    } catch (resendError) {
+      setError((resendError as Error).message || "Không thể gửi lại tin");
+    } finally {
+      setResendingId(null);
     }
   }
 
@@ -122,6 +139,7 @@ export function SentRoomSearch() {
       </div>
       {loading && <p className="sent-room-state" role="status">Đang tải kho tin...</p>}
       {error && <p className="sent-room-state error" role="alert">{error}</p>}
+      {resendMessage && <p className="sent-room-state" role="status">{resendMessage}</p>}
       {!loading && !error && rooms.length === 0 && (
         <p className="sent-room-state">Chưa có tin phù hợp. Tin bot gửi thành công từ bây giờ sẽ được lưu tại đây.</p>
       )}
@@ -132,7 +150,7 @@ export function SentRoomSearch() {
           ) : (
             <div className="sent-room-results">
               <table className="sent-room-table" aria-label="Danh sách tin đã gửi">
-                <thead><tr><th>Mã phòng</th><th>Nội dung</th><th>Trạng thái</th><th>Nguồn</th><th>Nhóm đích</th><th>Đã gửi</th><th>Gần nhất</th></tr></thead>
+                <thead><tr><th>Mã phòng</th><th>Nội dung</th><th>Trạng thái</th><th>Nguồn</th><th>Nhóm đích</th><th>Đã gửi</th><th>Gần nhất</th><th>Thao tác</th></tr></thead>
                 <tbody>{visibleRooms.map((room) => (
                   <tr key={room.id}>
                     <td><strong className="sent-room-code">{room.roomCode}</strong></td>
@@ -142,6 +160,11 @@ export function SentRoomSearch() {
                     <td><div className="destination-list">{room.destinations.map((destination) => <span key={destination.id}>{destination.name} ({destination.sentCount})</span>)}</div></td>
                     <td>{room.sentCount} lần</td>
                     <td>{formatTime(room.lastSentAt)}</td>
+                    <td>
+                      <button className="mini" type="button" aria-label={`Gửi lại ${room.roomCode}`} disabled={resendingId !== null} onClick={() => void resendRoom(room)}>
+                        {resendingId === room.id ? "Đang gửi..." : "↻ Gửi lại"}
+                      </button>
+                    </td>
                   </tr>
                 ))}</tbody>
               </table>

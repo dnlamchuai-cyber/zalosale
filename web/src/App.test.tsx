@@ -37,6 +37,9 @@ vi.mock("./components/AutoModeButton", () => ({
 vi.mock("./features/sent-message-index/SentRoomSearch", () => ({
   SentRoomSearch: () => <h2>Kho tin đã gửi</h2>,
 }));
+vi.mock("./features/customer-search/MapSearchPanel", () => ({
+  MapSearchPanel: () => <h2>Tìm trọ theo vùng bản đồ</h2>,
+}));
 
 beforeAll(() => {
   class EventSourceStub {

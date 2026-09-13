@@ -20,7 +20,7 @@ const config: AppConfig = {
   mode: "manual", deleteLines: [], excludeKeywords: [],
   filter: { removePercentLines: false, removePriceLines: false },
   priceRange: null, defaultArea: null,
-  forward: { windowMs: 3000, maxBatchItems: 10, maxWaitMs: 120000, sendDelayMs: 0, retries: 1, historyGapMs: 120000 },
+  forward: { windowMs: 3000, maxBatchItems: 10, maxWaitMs: 120000, sendDelayMs: 0, parallelSends: 1, skipTextOnly: true, retries: 1, historyGapMs: 120000 },
 };
 
 it("saves catch-all without keyword/price rules and restores the mode", async () => {

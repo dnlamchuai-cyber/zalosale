@@ -12,6 +12,7 @@ import {
   normalizeSearchText,
   toFtsQuery,
 } from "./normalize.js";
+import { extractRoomAddress } from "../customer-search/address.js";
 
 const ROOT = path.dirname(path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url)))));
 const DEFAULT_DATABASE_PATH = path.join(ROOT, "data", "zalosale.sqlite");
@@ -63,6 +64,7 @@ export function createSentMessageIndex({ databasePath = DEFAULT_DATABASE_PATH } 
 
   function recordBotDelivery(input) {
     const roomCode = extractRoomCode(input.originalContent) || generateRoomCode();
+    const address = extractRoomAddress(input.originalContent || input.sentContent);
     const normalizedSearch = normalizeSearchText(
       `${roomCode} ${input.originalContent} ${input.sentContent}`,
     );
@@ -73,6 +75,7 @@ export function createSentMessageIndex({ databasePath = DEFAULT_DATABASE_PATH } 
       contentHash: contentHash(input.sentContent),
       sentAt: Number(input.sentAt) || Date.now(),
       imageTotal: Number(input.imageTotal) || 0,
+      address,
     });
   }
 
@@ -105,5 +108,10 @@ export function createSentMessageIndex({ databasePath = DEFAULT_DATABASE_PATH } 
     return repository.clearDeliveries();
   }
 
-  return { recordBotDelivery, hasSent, hasSourceSent, countSentMessageIds, search, clear, close: repository.close };
+  function getResendPayload(roomId) {
+    if (typeof roomId !== "string" || !roomId.trim()) return null;
+    return repository.resendData(roomId.trim());
+  }
+
+  return { recordBotDelivery, hasSent, hasSourceSent, countSentMessageIds, search, clear, getResendPayload, close: repository.close };
 }

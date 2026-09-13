@@ -1,4 +1,4 @@
-import type { AppConfig, GroupInfo, LogEntry, ScanPost, SentRoomSummary, StatusData } from "./types";
+import type { AppConfig, CustomerProfile, GroupInfo, LogEntry, MapCandidate, MapRoomsResult, SearchRequest, SearchZone, SentRoomSummary, StatusData } from "./types";
 
 const BASE = "";
 const GROUPS_CACHE_KEY = "zalo-sale.groups-cache";
@@ -94,6 +94,34 @@ export const api = {
     request<{ ok: true; rooms: SentRoomSummary[] }>(`/api/sent-rooms?q=${encodeURIComponent(query)}&limit=${limit}`),
   clearSentRooms: () => request<{ ok: true; clearedRooms: number }>("/api/sent-rooms/clear", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmation: "CLEAR_SENT_ROOMS" }),
+  }),
+  resendSentRoom: (roomId: string) => request<{ ok: true; sent: number; failed: number }>(`/api/sent-rooms/${encodeURIComponent(roomId)}/resend`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+  }),
+  customers: () => request<{ ok: true; customers: CustomerProfile[] }>("/api/customers"),
+  createCustomer: (input: { name: string; phone: string }) => request<{ ok: true; customer: CustomerProfile }>("/api/customers", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+  }),
+  searchRequests: (customerId: string) => request<{ ok: true; searchRequests: SearchRequest[] }>(`/api/customers/${encodeURIComponent(customerId)}/search-requests`),
+  createSearchRequest: (customerId: string, title: string) => request<{ ok: true; searchRequest: SearchRequest }>(`/api/customers/${encodeURIComponent(customerId)}/search-requests`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }),
+  }),
+  searchZones: (requestId: string) => request<{ ok: true; zones: SearchZone[] }>(`/api/search-requests/${encodeURIComponent(requestId)}/search-zones`),
+  createSearchZone: (requestId: string, input: { label: string; center: { latitude: number; longitude: number }; radiusMeters: number; enabled?: boolean }) => request<{ ok: true; zone: SearchZone }>(`/api/search-requests/${encodeURIComponent(requestId)}/search-zones`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+  }),
+  geocodeMap: (query: string) => request<{ ok: true; candidates: MapCandidate[] }>("/api/map/geocode", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query }),
+  }),
+  mapRooms: (requestId: string) => request<MapRoomsResult & { ok: true }>(`/api/search-requests/${encodeURIComponent(requestId)}/map-rooms`),
+  mapRoomsForZones: (zones: Array<{ label: string; center: { latitude: number; longitude: number }; radiusMeters: number; enabled?: boolean }>) => request<MapRoomsResult & { ok: true }>("/api/map/rooms", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ zones }),
+  }),
+  resolveRoomLocation: (roomId: string, address: string, options: { selectFirst?: boolean } = {}) => request<{ ok: true; location: { status: string; latitude: number | null; longitude: number | null } }>(`/api/rooms/${encodeURIComponent(roomId)}/location/resolve`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address, ...options }),
+  }),
+  backfillRoomAddresses: () => request<{ ok: true; updated: number }>("/api/map/rooms/backfill-addresses", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
   }),
   control: (body: Record<string, unknown>) =>
     request<Record<string, unknown>>("/api/control", {

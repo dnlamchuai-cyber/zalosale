@@ -5,9 +5,10 @@
 export type ScanSort = "newest" | "oldest" | "source" | "price-high" | "price-low" | "commission-high";
 
 export function ScanFilters({
-  sources, keywords, source, onSource, keyword, onKeyword, query, onQuery, media, onMedia, commission, onCommission, priceMin, onPriceMin, priceMax, onPriceMax, commissionMin, onCommissionMin, sort, onSort, onReset,
+  sources, keywords, source, onSource, keyword, onKeyword, status, onStatus, query, onQuery, media, onMedia, commission, onCommission, priceMin, onPriceMin, priceMax, onPriceMax, commissionMin, onCommissionMin, sort, onSort, onReset,
 }: {
   sources: string[]; keywords: string[]; source: string; onSource: (value: string) => void; keyword: string; onKeyword: (value: string) => void; query: string; onQuery: (value: string) => void;
+  status: string; onStatus: (value: string) => void;
   media: string; onMedia: (value: string) => void; commission: string; onCommission: (value: string) => void;
   priceMin: string; onPriceMin: (value: string) => void; priceMax: string; onPriceMax: (value: string) => void;
   commissionMin: string; onCommissionMin: (value: string) => void;
@@ -16,6 +17,7 @@ export function ScanFilters({
   return <div className="scan-filters" aria-label="Bộ lọc kết quả quét">
     <select aria-label="Lọc nhóm nguồn" value={source} onChange={(event) => onSource(event.target.value)}><option value="">Tất cả nhóm nguồn</option>{sources.map((name) => <option key={name}>{name}</option>)}</select>
     <select aria-label="Lọc từ khóa đích" value={keyword} onChange={(event) => onKeyword(event.target.value)}><option value="">Từ khóa đích: tất cả</option>{keywords.map((name) => <option key={name}>{name}</option>)}</select>
+    <select aria-label="Lọc trạng thái" value={status} onChange={(event) => onStatus(event.target.value)}><option value="">Trạng thái: tất cả</option><option value="undetermined">Chưa xác định</option><option value="pending">Chưa gửi</option><option value="sent">Đã gửi</option><option value="error">Lỗi</option><option value="duplicate">Trùng</option><option value="no_images">Không ảnh/video</option><option value="no_opening">Không có tin mở</option></select>
     <input aria-label="Lọc nội dung hoặc mã phòng" type="search" value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Lọc mã/nội dung" />
     <select aria-label="Lọc ảnh" value={media} onChange={(event) => onMedia(event.target.value)}><option value="">Ảnh: tất cả</option><option value="yes">Có ảnh</option><option value="no">Không ảnh</option></select>
     <select aria-label="Lọc hoa hồng" value={commission} onChange={(event) => onCommission(event.target.value)}><option value="">Hoa hồng: tất cả</option><option value="yes">Có hoa hồng</option><option value="no">Không hoa hồng</option></select>

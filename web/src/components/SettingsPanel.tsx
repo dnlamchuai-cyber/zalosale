@@ -16,6 +16,8 @@ export function SettingsPanel({ config, onSave }: { config: AppConfig; onSave: (
     maxBatchItems: config.forward.maxBatchItems,
     maxWaitMs: config.forward.maxWaitMs,
     sendDelayMs: config.forward.sendDelayMs,
+    parallelSends: config.forward.parallelSends,
+    skipTextOnly: config.forward.skipTextOnly,
     retries: config.forward.retries,
     historyGapMs: config.forward.historyGapMs,
   });
@@ -34,6 +36,8 @@ export function SettingsPanel({ config, onSave }: { config: AppConfig; onSave: (
       maxBatchItems: config.forward.maxBatchItems,
       maxWaitMs: config.forward.maxWaitMs,
       sendDelayMs: config.forward.sendDelayMs,
+      parallelSends: config.forward.parallelSends,
+      skipTextOnly: config.forward.skipTextOnly,
       retries: config.forward.retries,
       historyGapMs: config.forward.historyGapMs,
     });
@@ -53,6 +57,8 @@ export function SettingsPanel({ config, onSave }: { config: AppConfig; onSave: (
           maxBatchItems: +form.maxBatchItems || config.forward.maxBatchItems,
           maxWaitMs: +form.maxWaitMs || config.forward.maxWaitMs,
           sendDelayMs: +form.sendDelayMs || config.forward.sendDelayMs,
+          parallelSends: Math.min(2, Math.max(1, +form.parallelSends || config.forward.parallelSends)),
+          skipTextOnly: form.skipTextOnly,
           retries: +form.retries || config.forward.retries,
           historyGapMs: +form.historyGapMs || config.forward.historyGapMs,
         },
@@ -132,6 +138,14 @@ export function SettingsPanel({ config, onSave }: { config: AppConfig; onSave: (
         <label className="field">
           Delay giữa các lần gửi (ms)
           <input type="number" value={form.sendDelayMs} onChange={(e) => set("sendDelayMs", e.target.value)} />
+        </label>
+        <label className="field">
+          Luồng gửi song song (tối đa 2)
+          <input type="number" min={1} max={2} value={form.parallelSends} onChange={(e) => set("parallelSends", e.target.value)} />
+        </label>
+        <label className="field">
+          <input type="checkbox" checked={form.skipTextOnly} onChange={(e) => set("skipTextOnly", e.target.checked)} />
+          Bỏ qua cụm chỉ chữ và ảnh đứng riêng
         </label>
         <label className="field">
           Số lần thử lại

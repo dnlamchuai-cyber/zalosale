@@ -5,6 +5,8 @@ export interface ForwardConfig {
   maxBatchItems: number;
   maxWaitMs: number;
   sendDelayMs: number;
+  parallelSends: number;
+  skipTextOnly: boolean;
   retries: number;
   historyGapMs: number;
 }
@@ -119,7 +121,7 @@ export interface ScanPost {
   price: number | null;
   commissionPercent: number | null;
   inPriceRange: boolean;
-  status?: "pending" | "sent" | "duplicate" | "error" | "undetermined";
+  status?: "pending" | "sent" | "duplicate" | "error" | "undetermined" | "no_images" | "no_opening";
   duplicateOf?: string;
   videoStatus?: "pending" | "sent" | "failed" | null;
   sentImages?: number;
@@ -208,4 +210,59 @@ export interface OsmPreviewRow {
   type: LocationRuleType;
   routingKeys: string[];
   source: "osm";
+}
+
+export interface CustomerProfile {
+  id: string;
+  name: string;
+  phoneDisplay: string;
+  phoneNormalized: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SearchRequest {
+  id: string;
+  customerId: string;
+  title: string;
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SearchZone {
+  id: string;
+  requestId: string;
+  label: string;
+  center: { latitude: number; longitude: number };
+  radiusMeters: number;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MapCandidate {
+  latitude: number;
+  longitude: number;
+  displayName: string;
+  importance: number | null;
+}
+
+export interface MapRoom {
+  id: string;
+  roomCode: string;
+  address: string;
+  latestContent: string;
+  status: string;
+  locationStatus: string;
+  latitude: number | null;
+  longitude: number | null;
+}
+
+export interface MapRoomsResult {
+  requestId?: string | null;
+  zones: SearchZone[];
+  matchedRooms: Array<{ room: MapRoom; matchedZoneIds: string[] }>;
+  unmatchedRooms: MapRoom[];
+  unlocatedRooms: MapRoom[];
 }

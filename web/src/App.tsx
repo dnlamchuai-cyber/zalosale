@@ -13,6 +13,7 @@ import { ScanReviewPanel } from "./components/ScanReview";
 import { LocationRulesPanel } from "./components/LocationRulesPanel";
 import { AutoModeButton } from "./components/AutoModeButton";
 import { SentRoomSearch } from "./features/sent-message-index/SentRoomSearch";
+import { MapSearchPanel } from "./features/customer-search/MapSearchPanel";
 
 export default function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -220,6 +221,8 @@ export default function App() {
             <ScanReviewPanel defaultDays={3} areas={config.areas} sourceGroups={config.sourceGroups} />
 
             <SentRoomSearch />
+
+            <MapSearchPanel />
 
             <AreasPanel config={config} onSave={saveConfig} />
 

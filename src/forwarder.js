@@ -9,12 +9,36 @@ import { TEMP_DIR } from "./config.js";
 import { cleanText, isExcluded, isInPriceRange, normalizeText, parsePrice } from "./processor.js";
 import { classifyArea, classifyAreas, classifyAreasDetailed, destinationLabel, detectHanoiDistrict, findAreaMatch } from "./classifier.js";
 import { buildingKeyFromText, buildingNoticeMatchesText, parseFullBuildingNotice } from "./full-building.js";
-import { extractPhotoUrls, photoUrls } from "./media.js";
+import { isOpeningSegment } from "./batcher.js";
+import { extractPhotoUrls, photoUrls, videoUrls } from "./media.js";
 import { buildDeliveryUnits } from "./delivery.js";
+import { isStickerMessage } from "./closing-sticker.js";
 import { contentHash } from "./features/sent-message-index/normalize.js";
 import { loadRulesCached } from "./features/location-rules/repository.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// WHY: lệnh gửi Zalo treo là cả hàng đợi đứng theo — quá hạn thì bỏ cụm đó để đi tiếp
+// (chấp nhận rủi ro nhỏ gửi trùng nếu server thực ra đã nhận; kho tin chặn trùng ở lượt sau).
+function sendWithTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} quá ${Math.round(ms / 1000)}s không phản hồi`)), ms);
+  });
+  return Promise.race([
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        return value;
+      },
+      (error) => {
+        clearTimeout(timer);
+        throw error;
+      },
+    ),
+    timeout,
+  ]);
+}
 const MAX_PARALLEL_IMAGE_DOWNLOADS = 6; // WHY: tải 6 ảnh cùng lúc cho kịp cụm đông, vẫn nhẹ mạng.
 
 function parseAttachmentLimit(error) {
@@ -64,7 +88,7 @@ function prepareDeliveryUnits(deliveryUnits, downloadedFiles) {
 }
 
 function isTextItem(item) {
-  return typeof item?.data?.content === "string";
+  return typeof item?.data?.content === "string" && !isStickerMessage(item?.data ?? item);
 }
 
 /** ID tin Zalo trong cụm (msgId/cliMsgId) — để quét lại loại đúng tin cũ đã gửi. */
@@ -99,11 +123,15 @@ export class Forwarder {
     this.onDelivery = onDelivery;
     this.isPreviouslySent = isPreviouslySent;
     this.closingStickerStore = closingStickerStore;
-    this.queue = Promise.resolve();
+    this.pendingPayloads = [];
+    this.activeForwardWorkers = 0;
+    this.availableSendLanes = [0, 1];
     this.scheduled = new Set();
-    this.nextSendAt = 0;
+    this.nextSendAtByLane = [0, 0];
+    this.destinationTails = new Map();
     this.fullBuildings = new Map();
     this.seen = new Set();
+    this.sending = new Set();
     this.imgIndex = 0;
     fs.mkdirSync(TEMP_DIR, { recursive: true });
   }
@@ -241,7 +269,7 @@ export class Forwarder {
     };
   }
 
-  /** nối vào hàng đợi (không gửi song song), có thể giữ đến mốc notBefore */
+  /** Nối vào tối đa hai luồng gửi; từng luồng vẫn giữ đúng thứ tự media của cụm. */
   enqueue(payload) {
     const notBefore = Number(payload.notBefore || 0);
     if (notBefore > Date.now()) {
@@ -258,20 +286,45 @@ export class Forwarder {
   }
 
   enqueueNow(payload) {
-    this.queue = this.queue.then(async () => {
-      try {
-        if (payload.beforeSend && !(await payload.beforeSend())) {
-          logger.info(`Bỏ qua bài ${payload.source || "queued"}: không còn tồn tại ở nhóm nguồn`);
-          return { sent: false, skipped: true };
-        }
-        return await this.forwardPayload(payload);
-      } catch (e) {
-        logger.error(`Lỗi forward: ${e.stack}`);
-        return { sent: false, error: true };
-      }
+    return new Promise((resolve) => {
+      this.pendingPayloads.push({ payload, resolve });
+      this.drainQueue();
     });
-    this.queue.catch(() => {});
-    return this.queue;
+  }
+
+  parallelSendLimit() {
+    return Math.min(2, Math.max(1, Math.floor(Number(this.config.forward.parallelSends) || 1)));
+  }
+
+  drainQueue() {
+    while (this.pendingPayloads.length && this.activeForwardWorkers < this.parallelSendLimit()) {
+      const entry = this.pendingPayloads.shift();
+      const sendLane = this.availableSendLanes.shift();
+      this.activeForwardWorkers++;
+      void this.runQueuedPayload(entry, sendLane).finally(() => {
+        this.activeForwardWorkers--;
+        this.availableSendLanes.push(sendLane);
+        this.drainQueue();
+      });
+    }
+  }
+
+  async runQueuedPayload(entry, sendLane) {
+    let outcome;
+    try {
+      const { payload } = entry;
+      if (payload.beforeSend && !(await payload.beforeSend())) {
+        logger.info(`Bỏ qua bài ${payload.source || "queued"}: không còn tồn tại ở nhóm nguồn`);
+        outcome = { sent: false, skipped: true };
+        return;
+      }
+      outcome = await this.forwardPayload({ ...payload, sendLane });
+    } catch (e) {
+      logger.error(`Lỗi forward: ${e.stack}`);
+      outcome = { sent: false, error: true };
+    } finally {
+      entry.resolve(outcome || { sent: false, error: true });
+    }
   }
 
   stop() {
@@ -280,13 +333,32 @@ export class Forwarder {
       entry.resolve({ sent: false, skipped: true, cancelled: true });
     }
     this.scheduled.clear();
+    for (const entry of this.pendingPayloads.splice(0)) {
+      entry.resolve({ sent: false, skipped: true, cancelled: true });
+    }
   }
 
-  async waitForSendSlot() {
+  async waitForSendSlot(sendLane = 0) {
     const interval = Math.max(0, Number(this.config.forward.sendDelayMs) || 0);
-    const waitMs = Math.max(0, this.nextSendAt - Date.now());
+    const lane = Number.isInteger(sendLane) && sendLane >= 0 ? sendLane : 0;
+    const waitMs = Math.max(0, (this.nextSendAtByLane[lane] || 0) - Date.now());
     if (waitMs) await sleep(waitMs);
-    this.nextSendAt = Date.now() + interval;
+    this.nextSendAtByLane[lane] = Date.now() + interval;
+  }
+
+  /** Giữ chữ, ảnh và sticker của một cụm liền nhau trong cùng nhóm đích. */
+  async sendInDestinationOrder(destId, send) {
+    const previous = this.destinationTails.get(destId) || Promise.resolve();
+    let release;
+    const current = new Promise((resolve) => { release = resolve; });
+    this.destinationTails.set(destId, current);
+    await previous;
+    try {
+      return await send();
+    } finally {
+      release();
+      if (this.destinationTails.get(destId) === current) this.destinationTails.delete(destId);
+    }
   }
 
   markBuildingFull(threadId, notice) {
@@ -310,10 +382,19 @@ export class Forwarder {
 
     const text = items.filter(isTextItem).map((it) => it.data.content).join("\n\n");
     const photos = items.filter((it) => photoUrls(it).length > 0);
+    const hasVideo = items.some((item) => videoUrls(item).length > 0);
+    const hasVisualMedia = photos.length > 0 || hasVideo;
+    const isStandalonePhotoCluster = photos.length > 0 && !hasVideo && !text.trim();
+    const hasOpening = isOpeningSegment(items, payload);
 
     if (!text.trim() && !photos.length) {
       logger.debug("Bỏ qua: bài đăng không có text và ảnh");
       return { sent: false };
+    }
+    if (this.config.forward.skipTextOnly !== false && (!hasOpening || !hasVisualMedia || isStandalonePhotoCluster)) {
+      const reason = !hasOpening ? "no-opening" : "incomplete-visual-cluster";
+      logger.info(`Bỏ qua cụm không đủ tin mở + ảnh/video từ nhóm ${payload.threadId}`);
+      return { sent: false, skipped: true, reason };
     }
 
     const fullNotice = parseFullBuildingNotice(text);
@@ -339,7 +420,10 @@ export class Forwarder {
       return { sent: false };
     }
 
-    const destinations = this.selectDestinations(text, payload.inheritedDestinations);
+    // Gửi lại từ kho phải giữ nguyên các nhóm đã chọn trước đó, không chạy lại định tuyến.
+    const destinations = Array.isArray(payload.resendDestinations) && payload.resendDestinations.length
+      ? payload.resendDestinations
+      : this.selectDestinations(text, payload.inheritedDestinations);
     if (!destinations.length) {
       logger.warn(`Không nhận định được khu vực cho bài đăng từ nhóm ${payload.threadId} — bỏ qua (hãy bổ sung từ khoá hoặc defaultArea)`);
       return { sent: false };
@@ -399,21 +483,24 @@ export class Forwarder {
         const alreadyStored = bypassDedup
           ? false
           : await this.isPreviouslySent({ destinationId: destId, content: clean });
-        if (!bypassDedup && (this.seen.has(signature) || alreadyStored)) {
+        if (!bypassDedup && (this.seen.has(signature) || this.sending.has(signature) || alreadyStored)) {
           logger.info(`Bỏ qua: bài đăng trùng trong nhóm ${destId}`);
           duplicateCount++;
           continue;
         }
         logger.info(`Forward ${payload.source}: khu vực "${destinationLabel(destination)}" → nhóm ${destId} (${urls.length} media)`);
+        this.sending.add(signature);
         try {
-          for (const unit of preparedUnits) {
-            if (unit.kind === "video") {
-              if (await this.sendVideoAsFile(destId, unit, files)) videoSent = true;
-            } else if (!videoOnly) {
-              await this.sendWithRetry(destId, unit.text, unit.files || []);
+          await this.sendInDestinationOrder(destId, async () => {
+            for (const unit of preparedUnits) {
+              if (unit.kind === "video") {
+                if (await this.sendVideoAsFile(destId, unit, files, payload.sendLane)) videoSent = true;
+              } else if (!videoOnly) {
+                await this.sendWithRetry(destId, unit.text, unit.files || [], payload.sendLane);
+              }
             }
-          }
-          await this.sendClosingSticker(destId);
+            await this.sendClosingSticker(destId, payload.sendLane);
+          });
           // Gửi lại riêng video thì nội dung đã lưu rồi — không ghi trùng kho.
           if (!videoOnly) {
             try {
@@ -435,6 +522,8 @@ export class Forwarder {
         } catch (error) {
           failedCount++;
           logger.error(`Gửi nhóm ${destId} thất bại: ${error.stack}`);
+        } finally {
+          this.sending.delete(signature);
         }
       }
       if (this.seen.size > 5000) this.seen.clear();
@@ -509,12 +598,12 @@ export class Forwarder {
     }
   }
 
-  async sendWithRetry(destId, text, files) {
+  async sendWithRetry(destId, text, files, sendLane = 0) {
     const pendingBatches = [{ text: text || "", files: [...files] }];
     while (pendingBatches.length) {
       const batch = pendingBatches.shift();
       try {
-        await this.sendBatchWithRetry(destId, batch.text, batch.files);
+        await this.sendBatchWithRetry(destId, batch.text, batch.files, sendLane);
       } catch (error) {
         const limit = parseAttachmentLimit(error);
         if (!limit || batch.files.length <= limit) throw error;
@@ -531,19 +620,19 @@ export class Forwarder {
   // WHY: Zalo luôn từ chối video native ("Tham số không hợp lệ") — bỏ native,
   // tải video về và gửi thẳng dạng file đính kèm. Video nặng nên chờ lâu hơn ảnh;
   // tải lỗi thì bỏ video, vẫn gửi chữ + ảnh còn lại (trả về false).
-  async sendVideoAsFile(destId, unit, cleanupFiles) {
+  async sendVideoAsFile(destId, unit, cleanupFiles, sendLane = 0) {
     const videoFile = await this.download(unit.videoUrl, "video", 120000);
     if (!videoFile) {
       logger.warn("Bỏ video (tải quá 120s hoặc lỗi) — vẫn gửi chữ và ảnh còn lại của cụm");
       return false;
     }
     cleanupFiles.push(videoFile);
-    await this.sendWithRetry(destId, "", [videoFile]);
+    await this.sendWithRetry(destId, "", [videoFile], sendLane);
     return true;
   }
 
-  async sendBatchWithRetry(destId, text, files) {
-    const { retries } = this.config.forward;
+  async sendBatchWithRetry(destId, text, files, sendLane = 0) {
+    const { retries, sendTimeoutMs = 60000 } = this.config.forward;
     const pendingFiles = [...files];
     let attempt = 0;
 
@@ -551,13 +640,17 @@ export class Forwarder {
       try {
         if (pendingFiles.length) {
           // Gửi tuần tự từng batch để API giữ đúng thứ tự media.
-          await this.waitForSendSlot();
-          await this.api.sendMessage({ msg: text || "", attachments: pendingFiles }, destId, ThreadType.Group);
+          await this.waitForSendSlot(sendLane);
+          await sendWithTimeout(
+            this.api.sendMessage({ msg: text || "", attachments: pendingFiles }, destId, ThreadType.Group),
+            sendTimeoutMs,
+            "Gửi tin",
+          );
           return;
         }
         if (text) {
-          await this.waitForSendSlot();
-          await this.api.sendMessage(text, destId, ThreadType.Group);
+          await this.waitForSendSlot(sendLane);
+          await sendWithTimeout(this.api.sendMessage(text, destId, ThreadType.Group), sendTimeoutMs, "Gửi tin");
         }
         return;
       } catch (e) {
@@ -572,15 +665,15 @@ export class Forwarder {
     }
   }
 
-  async sendClosingSticker(destId) {
+  async sendClosingSticker(destId, sendLane = 0) {
     const sticker = this.closingStickerStore?.get();
     if (!sticker) return;
-    const { retries } = this.config.forward;
+    const { retries, sendTimeoutMs = 60000 } = this.config.forward;
     let attempt = 0;
     while (true) {
       try {
-        await this.waitForSendSlot();
-        await this.api.sendSticker(sticker, destId, ThreadType.Group);
+        await this.waitForSendSlot(sendLane);
+        await sendWithTimeout(this.api.sendSticker(sticker, destId, ThreadType.Group), sendTimeoutMs, "Gửi sticker");
         return;
       } catch (error) {
         if (attempt >= retries) {

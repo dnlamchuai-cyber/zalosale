@@ -35,31 +35,33 @@ export function createSentMessageRepository(databasePath) {
     return database.prepare("SELECT * FROM room_records WHERE room_code = ? COLLATE NOCASE").get(roomCode);
   }
 
-  function insertRoom({ roomCode, content, normalizedSearch, timestamp }) {
+  function insertRoom({ roomCode, address = "", content, normalizedSearch, timestamp }) {
     const id = crypto.randomUUID();
     database.prepare(`
       INSERT INTO room_records
-        (id, room_code, latest_content, normalized_search, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(id, roomCode, content, normalizedSearch, timestamp, timestamp);
+        (id, room_code, address, location_address, latest_content, normalized_search, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, roomCode, address, address, content, normalizedSearch, timestamp, timestamp);
     database.prepare("INSERT INTO room_search (room_id, search_text) VALUES (?, ?)")
       .run(id, normalizedSearch);
     return findRoomByCode(roomCode);
   }
 
-  function updateRoom(room, content, normalizedSearch, timestamp) {
+  function updateRoom(room, address, content, normalizedSearch, timestamp) {
     const combinedSearch = room.normalized_search.includes(normalizedSearch)
       ? room.normalized_search
       : `${room.normalized_search} ${normalizedSearch}`.trim();
     database.prepare(`
       UPDATE room_records
-      SET latest_content = ?, normalized_search = ?, updated_at = ?
+      SET address = CASE WHEN address = '' AND ? <> '' THEN ? ELSE address END,
+          location_address = CASE WHEN location_address = '' AND ? <> '' THEN ? ELSE location_address END,
+          latest_content = ?, normalized_search = ?, updated_at = ?
       WHERE id = ?
-    `).run(content, combinedSearch, timestamp, room.id);
+    `).run(address, address, address, address, content, combinedSearch, timestamp, room.id);
     database.prepare("DELETE FROM room_search WHERE room_id = ?").run(room.id);
     database.prepare("INSERT INTO room_search (room_id, search_text) VALUES (?, ?)")
       .run(room.id, combinedSearch);
-    return { ...room, latest_content: content, normalized_search: combinedSearch, updated_at: timestamp };
+    return { ...room, address: room.address || address, location_address: room.location_address || address, latest_content: content, normalized_search: combinedSearch, updated_at: timestamp };
   }
 
   function recordDelivery(delivery) {
@@ -69,9 +71,10 @@ export function createSentMessageRepository(databasePath) {
       const destinationId = upsertGroup(delivery.destinationGroup, capturedAt);
       const existingRoom = findRoomByCode(delivery.roomCode);
       const room = existingRoom
-        ? updateRoom(existingRoom, delivery.sentContent, delivery.normalizedSearch, delivery.sentAt)
+        ? updateRoom(existingRoom, delivery.address || "", delivery.sentContent, delivery.normalizedSearch, delivery.sentAt)
         : insertRoom({
           roomCode: delivery.roomCode,
+          address: delivery.address || "",
           content: delivery.sentContent,
           normalizedSearch: delivery.normalizedSearch,
           timestamp: delivery.sentAt,
@@ -126,6 +129,34 @@ export function createSentMessageRepository(databasePath) {
     `).all(...ids);
   }
 
+  function resendData(roomId) {
+    const rows = database.prepare(`
+      SELECT sent_messages.room_id, sent_messages.source_group_id,
+             sent_messages.sent_content, destination.id AS destination_id,
+             destination.name AS destination_name
+      FROM sent_messages
+      JOIN zalo_groups destination ON destination.id = sent_messages.destination_group_id
+      WHERE sent_messages.room_id = ?
+      ORDER BY sent_messages.sent_at DESC
+    `).all(String(roomId));
+    if (!rows.length) return null;
+    const destinations = new Map();
+    for (const row of rows) {
+      if (!destinations.has(row.destination_id)) {
+        destinations.set(row.destination_id, {
+          id: row.destination_id,
+          name: row.destination_name || row.destination_id,
+        });
+      }
+    }
+    return {
+      roomId: rows[0].room_id,
+      sourceGroupId: rows[0].source_group_id || "",
+      sentContent: rows[0].sent_content || "",
+      destinations: [...destinations.values()],
+    };
+  }
+
   function hasDelivery(destinationId, contentHash) {
     return Boolean(database.prepare(`
       SELECT 1 FROM sent_messages
@@ -163,6 +194,6 @@ export function createSentMessageRepository(databasePath) {
   }
 
   return {
-    database, recordDelivery, hasDelivery, hasSourceDelivery, countSentMessageIds, clearDeliveries, roomRows, deliveriesForRooms, close: () => database.close(),
+    database, recordDelivery, hasDelivery, hasSourceDelivery, countSentMessageIds, clearDeliveries, roomRows, deliveriesForRooms, resendData, close: () => database.close(),
   };
 }

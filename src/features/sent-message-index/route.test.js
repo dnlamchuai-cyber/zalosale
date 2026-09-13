@@ -3,7 +3,7 @@
 // Link: docs/03_SPEC/SPEC-002.md + docs/04_PROMPTS/PROMPT-005.md
 
 import assert from "node:assert/strict";
-import { clearSentRoomsRoute, searchSentRoomsRoute } from "./route.js";
+import { clearSentRoomsRoute, resendSentRoomRoute, searchSentRoomsRoute } from "./route.js";
 
 function mockResponse() {
   const response = { statusCode: 200, body: null };
@@ -37,3 +37,14 @@ assert.deepEqual(clearResponse.body, { ok: true, clearedRooms: 2 });
 const invalidClearResponse = mockResponse();
 clearSentRoomsRoute({ body: {}, sentMessageIndex: index }, invalidClearResponse);
 assert.equal(invalidClearResponse.statusCode, 400);
+
+const resendResponse = mockResponse();
+await resendSentRoomRoute({
+  params: { roomId: "550e8400-e29b-41d4-a716-446655440000" },
+  resendSentRoom: async () => ({ sent: 2, failed: 0 }),
+}, resendResponse);
+assert.deepEqual(resendResponse.body, { ok: true, sent: 2, failed: 0 });
+
+const invalidResendResponse = mockResponse();
+await resendSentRoomRoute({ params: { roomId: "room-1" }, resendSentRoom: async () => ({ sent: 1 }) }, invalidResendResponse);
+assert.equal(invalidResendResponse.statusCode, 400);
