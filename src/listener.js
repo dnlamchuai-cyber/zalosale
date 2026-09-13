@@ -10,7 +10,6 @@ import { readPersistedScanSync, writePersistedScanSync } from "./scan-state.js";
 import { messageIdsOf } from "./forwarder.js";
 import { extractStickerId } from "./closing-sticker.js";
 import { parseFullBuildingNotice } from "./full-building.js";
-import { isOpeningSegment } from "./batcher.js";
 
 const norm = (s) => normalizeText(s);
 /** Khoá so khớp tên nhóm: bỏ emoji/icon/dấu câu, chỉ giữ chữ + số + khoảng trắng */
@@ -590,7 +589,6 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
         if (isRepeatedPhotoOnlyCluster(sourcePosts, id, d.clean, d.photoUrls, t)) continue;
         const hasVideo = items.some((item) => videoUrls(item).length > 0);
         const hasVisualMedia = d.photoCount > 0 || hasVideo;
-        const hasOpening = isOpeningSegment(items, batchMeta);
         const postId = `${scanId}:${id}:${idx++}`;
         const post = {
           id: postId,
@@ -612,13 +610,7 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
           price: d.price,
           commissionPercent: parseCommissionPercent(sourceText),
           inPriceRange: d.inPriceRange,
-          status: d.undetermined
-            ? "undetermined"
-            : !hasOpening
-              ? "no_opening"
-              : config.forward.skipTextOnly !== false && !hasVisualMedia
-                ? "no_images"
-                : "pending",
+          status: d.undetermined ? "undetermined" : config.forward.skipTextOnly !== false && !hasVisualMedia ? "no_images" : "pending",
           ts: t,
           clusterItems: items.map((item) => ({
             text: typeof item.data?.content === "string" ? item.data.content.slice(0, 1000) : "",
@@ -689,9 +681,8 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
         const hasVisualMedia = post.photos > 0 || post.videoStatus === "pending" || post.videoStatus === "sent";
         const hasText = raw.items.some((item) => typeof item?.data?.content === "string" && item.data.content.trim());
         const isStandalonePhoto = post.photos > 0 && !post.videoStatus && !hasText;
-        const hasOpening = isOpeningSegment(raw.items, raw.batchMeta);
-        if (config.forward.skipTextOnly !== false && (!hasOpening || !hasVisualMedia || isStandalonePhoto)) {
-          post.status = hasOpening ? "no_images" : "no_opening";
+        if (config.forward.skipTextOnly !== false && !videoOnly && (!hasVisualMedia || isStandalonePhoto)) {
+          post.status = "no_images";
           return false;
         }
         return true;

@@ -22,7 +22,8 @@ function itemText(item) {
 }
 
 export function isMediaItem(item) {
-  return photoUrls(item).length > 0;
+  const data = item?.data ?? item ?? {};
+  return photoUrls(item).length > 0 || Boolean(data.photo);
 }
 
 export function isRoomLabel(text) {
@@ -32,11 +33,6 @@ export function isRoomLabel(text) {
   const hasRoom = /(?:^|[\s,;-])(?:p|phong)\s*\d{2,4}\b/.test(normalized);
   const hasPosition = /(?:^|\s)(?:truc|tang)\s*[a-z0-9]/.test(normalized);
   return hasPrice || hasRoom || hasPosition;
-}
-
-export function isOpeningSegment(items, metadata = null) {
-  const segmentType = metadata?.segmentType ?? items?.batchMeta?.segmentType;
-  return segmentType === "building" || segmentType === "lead";
 }
 
 export function isCommissionHeader(text) {
@@ -86,8 +82,11 @@ function newState(threadId) {
     sequence: 0,
     contextSequence: 0,
     stickerDelimited: false,
-    // WHY: sticker thường bị gửi nhầm làm dấu ngăn cách; giữ ngữ cảnh để
-    // nhãn phòng, mô tả ngắn và ảnh sau nó vẫn nhập vào cụm trước.
+    // Sticker mở một khoảng ưu tiên; sticker kế tiếp chốt khoảng đó. Sticker
+    // nguồn không nằm trong items nên không thể bị gửi chen giữa một cụm.
+    stickerWindowOpen: false,
+    stickerWindowHasOpening: false,
+    stickerBuffer: [],
     contextStale: false,
     timer: null,
   };
@@ -126,6 +125,11 @@ export class Batcher extends EventEmitter {
     }
     const building = text ? describeBuilding(text, this.areas, this.rules) : { isBuilding: false, destinations: [], routeVia: null, matchedRules: [] };
     const startsBuilding = building.isBuilding;
+    if (state.stickerWindowOpen) {
+      this.addInsideStickerWindow(state, item, text, building);
+      this.schedule(state);
+      return;
+    }
     if (state.contextStale && text && (startsBuilding || isCommissionHeader(text))) {
       // Chỉ tin mở/hoa hồng mới chốt cụm trước; nhãn phòng và phần mô tả ngắn
       // sau sticker vẫn thuộc cụm đó (người gửi thường chèn sticker nhầm).
@@ -134,7 +138,8 @@ export class Batcher extends EventEmitter {
       state.buildingKey = null;
       state.contextStale = false;
     }
-    const continuesStickerSegment = state.contextStale && Boolean(text) && !startsBuilding && !isCommissionHeader(text);
+    const continuesStickerSegment = state.contextStale && Boolean(text)
+      && !startsBuilding && !isCommissionHeader(text) && isRoomLabel(text);
     if (state.fullBuildingKey) {
       const sameBuilding = !startsBuilding
         || (buildingKeyFromText(text) === state.fullBuildingKey
@@ -148,6 +153,12 @@ export class Batcher extends EventEmitter {
     }
     if (text && (hasContactOrLink(text) || text.length >= OPENING_MESSAGE_MIN_LENGTH)
       && !startsBuilding && !continuesStickerSegment) {
+      this.schedule(state);
+      return;
+    }
+    if (state.contextStale && text && !startsBuilding && !isCommissionHeader(text) && !isRoomLabel(text)) {
+      // Sau sticker, chữ ngắn không phải nhãn phòng chỉ là thông báo lẻ;
+      // không nhập vào cụm đang mở để tránh gửi nhầm.
       this.schedule(state);
       return;
     }
@@ -174,10 +185,8 @@ export class Batcher extends EventEmitter {
       || state.active?.segmentType === "room";
     const activePrefix = !state.buildingContext && canPrefix ? state.active.items : [];
     const prefix = [...bufferedRooms, ...activePrefix];
-    const moveOpeningToFront = state.stickerDelimited
-      || bufferedRooms.length > 0
-      || state.active?.segmentType === "room";
-    if (prefix.length) {
+    const moveOpeningToFront = prefix.length > 0;
+    if (moveOpeningToFront) {
       state.active = null;
       state.roomPrefix = [];
     }
@@ -193,28 +202,96 @@ export class Batcher extends EventEmitter {
       routeVia: building.routeVia || null,
       matchedRules: (building.matchedRules || []).map((r) => ({ name: r.name, type: r.type })),
     };
-    const items = moveOpeningToFront && prefix.length ? [item, ...prefix] : [...prefix, item];
+    const items = moveOpeningToFront ? [item, ...prefix] : [item];
     state.active = { segmentType: "building", items };
   }
 
-  startStickerSegment(state, item) {
-    const openHasText =
-      (state.active?.items || []).some((item) => itemText(item)) ||
-      state.pending.some((item) => itemText(item)) ||
-      state.roomPrefix.some((items) => items.some((item) => itemText(item)));
-    // Sticker giữa chùm chỉ-có-ảnh: bỏ qua, gom tiếp (vote 2026-09-11).
-    // Giữ cờ stickerDelimited để tin mở tới sau vẫn được đưa lên đầu (BIZ-004 BR2).
-    if (!openHasText) {
-      state.stickerDelimited = true;
+  startStickerSegment(state) {
+    if (state.stickerWindowOpen) {
+      this.finishStickerWindow(state);
       return;
     }
-    // Giữ sticker trong cụm chữ ngay trước; nhãn phòng và album ảnh tiếp theo
-    // sẽ nối tiếp cụm này cho tới khi gặp tin mở/hoa hồng mới.
-    if (state.active?.items.length) state.active.items.push(item);
-    else if (state.pending.length) state.pending.push(item);
-    else if (state.roomPrefix.length) state.roomPrefix[state.roomPrefix.length - 1].push(item);
-    state.contextStale = true;
+    // Chờ hết khoảng sticker mới quyết định: album trần thì thuộc cụm trước,
+    // còn list phòng trước tin mở thì được chuyển xuống sau tin mở mới.
+    state.stickerWindowOpen = true;
+    state.stickerWindowHasOpening = false;
+    state.stickerBuffer = [];
     state.stickerDelimited = true;
+  }
+
+  addInsideStickerWindow(state, item, text, building) {
+    const startsOpening = building.isBuilding || (text && isCommissionHeader(text));
+    if (!state.stickerWindowHasOpening && !startsOpening) {
+      state.stickerBuffer.push(item);
+      return;
+    }
+    if (!state.stickerWindowHasOpening) {
+      this.startOpeningFromStickerBuffer(state, item, building);
+      state.stickerWindowHasOpening = true;
+      return;
+    }
+    if (startsOpening) {
+      this.flushOpen(state);
+      state.buildingContext = null;
+      state.buildingKey = null;
+      if (building.isBuilding) this.startBuilding(state, item, building);
+      else this.startLead(state, item);
+      return;
+    }
+    this.appendItem(state, item);
+  }
+
+  startOpeningFromStickerBuffer(state, item, building) {
+    const buffered = state.stickerBuffer.splice(0);
+    const onlyMedia = buffered.length > 0 && buffered.every((entry) => isMediaItem(entry));
+    // Chỉ mang theo nội dung chứng minh đây là dữ liệu phòng. Câu thông báo
+    // ngắn chen trong khoảng sticker không được thành một phần của bài mới.
+    const roomItems = buffered.filter((entry) => isMediaItem(entry) || isRoomLabel(itemText(entry)));
+    const hasPriorCluster = state.active?.items.length || state.pending.length || state.roomPrefix.length;
+    if (onlyMedia && hasPriorCluster) {
+      this.appendBufferedMediaToOpenCluster(state, buffered);
+      this.flushOpen(state);
+      state.buildingContext = null;
+      state.buildingKey = null;
+    } else {
+      this.flushOpen(state);
+      state.buildingContext = null;
+      state.buildingKey = null;
+      const hasRoomList = roomItems.some((entry) => isRoomLabel(itemText(entry)));
+      if (roomItems.length > 0) {
+        state.active = { segmentType: hasRoomList ? "room" : "generic", items: roomItems };
+      }
+    }
+    if (building.isBuilding) this.startBuilding(state, item, building);
+    else this.startLead(state, item);
+  }
+
+  appendBufferedMediaToOpenCluster(state, items) {
+    if (state.active?.items.length) {
+      state.active.items.push(...items);
+      return;
+    }
+    if (state.pending.length) {
+      state.pending.push(...items);
+      return;
+    }
+    if (state.roomPrefix.length) state.roomPrefix[state.roomPrefix.length - 1].push(...items);
+  }
+
+  finishStickerWindow(state) {
+    if (!state.stickerWindowHasOpening) {
+      const buffered = state.stickerBuffer.splice(0);
+      const onlyMedia = buffered.length > 0 && buffered.every((entry) => isMediaItem(entry));
+      if (onlyMedia) this.appendBufferedMediaToOpenCluster(state, buffered);
+    }
+    this.flushOpen(state);
+    state.buildingContext = null;
+    state.buildingKey = null;
+    state.contextStale = false;
+    state.stickerWindowOpen = false;
+    state.stickerWindowHasOpening = false;
+    state.stickerBuffer = [];
+    state.stickerDelimited = false;
   }
 
   startLead(state, item) {
@@ -378,7 +455,7 @@ export class Batcher extends EventEmitter {
   }
 
   openItemCount(state) {
-    const bufferedRoomCount = this.prefixItemCount(state);
+    const bufferedRoomCount = this.prefixItemCount(state) + state.stickerBuffer.length;
     return bufferedRoomCount + (state.active?.items.length ?? 0) + state.pending.length;
   }
 
@@ -387,7 +464,9 @@ export class Batcher extends EventEmitter {
     const structured = state.stickerDelimited || state.buildingContext || state.active?.segmentType !== "generic";
     const wait = structured ? this.maxWaitMs : Math.min(this.windowMs, this.maxWaitMs);
     state.timer = setTimeout(() => {
-      this.flushOpen(state);
+      if (state.stickerWindowOpen) this.finishStickerWindow(state);
+      else this.flushOpen(state);
+      state.contextStale = false;
       state.timer = null;
     }, wait);
     if (state.timer.unref) state.timer.unref();
@@ -398,7 +477,8 @@ export class Batcher extends EventEmitter {
     const state = this.batches.get(id);
     if (!state) return;
     clearTimeout(state.timer);
-    this.flushOpen(state);
+    if (state.stickerWindowOpen) this.finishStickerWindow(state);
+    else this.flushOpen(state);
     this.batches.delete(id);
   }
 

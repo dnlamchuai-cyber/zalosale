@@ -121,7 +121,7 @@ export interface ScanPost {
   price: number | null;
   commissionPercent: number | null;
   inPriceRange: boolean;
-  status?: "pending" | "sent" | "duplicate" | "error" | "undetermined" | "no_images" | "no_opening";
+  status?: "pending" | "sent" | "duplicate" | "error" | "undetermined" | "no_images";
   duplicateOf?: string;
   videoStatus?: "pending" | "sent" | "failed" | null;
   sentImages?: number;

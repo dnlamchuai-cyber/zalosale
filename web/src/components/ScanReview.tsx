@@ -30,7 +30,6 @@ const STATUS_LABELS = {
   error: "Lỗi",
   undetermined: "Chưa xác định",
   no_images: "Không ảnh/video · bỏ qua",
-  no_opening: "Không có tin mở · bỏ qua",
 } as const;
 
 const STATUS_COLORS = {
@@ -40,7 +39,6 @@ const STATUS_COLORS = {
   error: { background: "#fee2e2", color: "#b91c1c" },
   undetermined: { background: "#e0e7ff", color: "#3730a3" },
   no_images: { background: "#f3f4f6", color: "#6b7280" },
-  no_opening: { background: "#f3f4f6", color: "#6b7280" },
 } as const;
 
 const ROUTE_REASON_LABELS: Record<string, string> = {
@@ -185,7 +183,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
   };
 
   const sendAll = async () => {
-    if (!scanId || !posts.some((post) => post.status !== "sent" && post.status !== "no_images" && post.status !== "no_opening")) return;
+    if (!scanId || !posts.some((post) => post.status !== "sent" && post.status !== "no_images")) return;
     setBusy(true);
     setSending(true);
     try {
@@ -330,7 +328,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
 
   const totalPages = Math.max(1, Math.ceil(filteredEntries.length / SCAN_PAGE_SIZE));
   const currentPage = Math.min(page, totalPages - 1);
-  const unsentCount = posts.filter((post) => post.status !== "sent" && post.status !== "no_images" && post.status !== "no_opening").length;
+  const unsentCount = posts.filter((post) => post.status !== "sent" && post.status !== "no_images").length;
   const pageEntries = filteredEntries.slice(currentPage * SCAN_PAGE_SIZE, (currentPage + 1) * SCAN_PAGE_SIZE);
   const allChecked = pageEntries.length > 0 && pageEntries.every(({ index }) => selected.has(index));
 

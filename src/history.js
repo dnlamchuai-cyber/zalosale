@@ -239,6 +239,8 @@ function batchHasOnlyRoomLabels(items) {
 }
 
 function batchTextIsOnlyRoomLabels(items) {
+  const segmentType = items?.batchMeta?.segmentType;
+  if (segmentType === "building" || segmentType === "lead") return false;
   const texts = (items || [])
     .filter((it) => !isStickerMessage(it?.data ?? it))
     .map((it) => (typeof it?.data?.content === "string" ? it.data.content.trim() : ""))

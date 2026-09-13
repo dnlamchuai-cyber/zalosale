@@ -9,7 +9,6 @@ import { TEMP_DIR } from "./config.js";
 import { cleanText, isExcluded, isInPriceRange, normalizeText, parsePrice } from "./processor.js";
 import { classifyArea, classifyAreas, classifyAreasDetailed, destinationLabel, detectHanoiDistrict, findAreaMatch } from "./classifier.js";
 import { buildingKeyFromText, buildingNoticeMatchesText, parseFullBuildingNotice } from "./full-building.js";
-import { isOpeningSegment } from "./batcher.js";
 import { extractPhotoUrls, photoUrls, videoUrls } from "./media.js";
 import { buildDeliveryUnits } from "./delivery.js";
 import { isStickerMessage } from "./closing-sticker.js";
@@ -385,16 +384,14 @@ export class Forwarder {
     const hasVideo = items.some((item) => videoUrls(item).length > 0);
     const hasVisualMedia = photos.length > 0 || hasVideo;
     const isStandalonePhotoCluster = photos.length > 0 && !hasVideo && !text.trim();
-    const hasOpening = isOpeningSegment(items, payload);
 
     if (!text.trim() && !photos.length) {
       logger.debug("Bỏ qua: bài đăng không có text và ảnh");
       return { sent: false };
     }
-    if (this.config.forward.skipTextOnly !== false && (!hasOpening || !hasVisualMedia || isStandalonePhotoCluster)) {
-      const reason = !hasOpening ? "no-opening" : "incomplete-visual-cluster";
-      logger.info(`Bỏ qua cụm không đủ tin mở + ảnh/video từ nhóm ${payload.threadId}`);
-      return { sent: false, skipped: true, reason };
+    if (this.config.forward.skipTextOnly !== false && (!hasVisualMedia || isStandalonePhotoCluster) && !payload.videoOnly) {
+      logger.info(`Bỏ qua cụm thiếu mô tả/ảnh-video từ nhóm ${payload.threadId}`);
+      return { sent: false, skipped: true, reason: "incomplete-visual-cluster" };
     }
 
     const fullNotice = parseFullBuildingNotice(text);

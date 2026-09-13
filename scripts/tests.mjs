@@ -1016,7 +1016,7 @@ stickerSeparated.add("source", { data: { normalUrl: "https://example.test/p302.j
 stickerSeparated.add("source", { data: { content: "Địa chỉ: Cầu Giấy. Căn hộ nội thất đầy đủ, phù hợp ở ngay và xem phòng mỗi ngày." } });
 stickerSeparated.add("source", { data: { msgType: "chat.sticker", content: { stickerId: 2 } } });
 stickerSeparated.flushAll();
-assertEq("sticker sau tin mở được giữ trong cụm trước", stickerSeparatedEvents[0]?.items.some((item) => item.data.msgType === "chat.sticker"), true);
+assertEq("sticker sau tin mở không chen vào cụm", stickerSeparatedEvents[0]?.items.some((item) => item.data.msgType === "chat.sticker"), false);
 assertEq("sticker rồi tin dài cuối đưa tin mở cụm lên đầu", stickerSeparatedEvents[0]?.items[0]?.data.content, "Địa chỉ: Cầu Giấy. Căn hộ nội thất đầy đủ, phù hợp ở ngay và xem phòng mỗi ngày.");
 assertEq("sticker giữ nhãn và ảnh phòng sau tin mở cụm", stickerSeparatedEvents[0]?.items.slice(1).filter((item) => item.data.msgType !== "chat.sticker").map((item) => item.data.content || item.data.normalUrl).join(","), "P302 - 9tr5,https://example.test/p302.jpg");
 
@@ -1053,7 +1053,7 @@ stickerTimerBatcher.on("batch", (event) => stickerTimerEvents.push(event));
 stickerTimerBatcher.add("source", { data: { content: "Mô tả phòng có sticker nhầm" } });
 stickerTimerBatcher.add("source", { data: { msgType: "chat.sticker", content: { stickerId: 3 } } });
 await sleep(60);
-assertEq("sticker vẫn tự xả cụm theo timer", stickerTimerEvents[0]?.items.at(-1)?.data.msgType, "chat.sticker");
+assertEq("sticker vẫn tự xả cụm theo timer", stickerTimerEvents[0]?.items.at(-1)?.data.content, "Mô tả phòng có sticker nhầm");
 
 const lateOpeningCluster = new Batcher({
   windowMs: 10,
@@ -1670,6 +1670,12 @@ const videoUnits = buildDeliveryUnits([videoItem], {});
 assertEq("cụm video tạo media unit", videoUnits[0]?.kind, "media");
 assertEq("media unit giữ URL video", videoUnits[0]?.urls[0]?.url, "https://video.example.test/clip.mp4");
 assertEq("media unit giữ loại video", videoUnits[0]?.urls[0]?.type, "video");
+const stickerSeparatedUnits = buildDeliveryUnits([
+  { data: { content: "Tin mở cụm" } },
+  { data: { msgType: "chat.sticker", content: "https://example.test/sticker.webp" } },
+  { data: { normalUrl: "https://example.test/room.jpg" } },
+], {});
+assertEq("sticker nguồn không tạo delivery unit", stickerSeparatedUnits.map((unit) => unit.kind).join(","), "text,media");
 const videoApi = makeApi();
 let downloadedVideoType = null;
 const nativeVideoCalls = [];

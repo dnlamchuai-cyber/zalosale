@@ -72,31 +72,3 @@ const duplicate = new Forwarder(
 const duplicateResult = await duplicate.forwardPayload(payload);
 assert.equal(duplicateResult.sent, false);
 assert.equal(duplicateResult.duplicate, true);
-
-const strictConfig = structuredClone(config);
-strictConfig.forward.skipTextOnly = true;
-const roomWithPhoto = new Forwarder(
-  { sendMessage: async () => { throw new Error("Không được gửi cụm không có tin mở"); } },
-  structuredClone(strictConfig),
-);
-const roomWithPhotoResult = await roomWithPhoto.forwardPayload({
-  threadId: "source-a",
-  source: "manual",
-  segmentType: "room",
-  items: [{ data: { content: "P301 1n1k 8tr", normalUrl: "https://example.test/room.jpg" } }],
-});
-assert.equal(roomWithPhotoResult.reason, "no-opening");
-
-const openingWithPhoto = new Forwarder(
-  { sendMessage: async () => ({ messageId: "zalo-opening-photo" }) },
-  structuredClone(strictConfig),
-);
-openingWithPhoto.download = async () => null;
-const openingWithPhotoResult = await openingWithPhoto.forwardPayload({
-  ...payload,
-  segmentType: "building",
-  items: [
-    { data: { content: "🏠 Nhà Cầu Giấy, phòng đầy đủ nội thất", normalUrl: "https://example.test/opening.jpg" } },
-  ],
-});
-assert.equal(openingWithPhotoResult.sent, true);

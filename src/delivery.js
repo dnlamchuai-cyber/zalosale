@@ -3,11 +3,13 @@
 // Link: docs/05_TASKS/TASK-006.md — quy tắc cụm được duyệt 2026-09-05
 
 import { attachmentUrls } from "./media.js";
+import { isStickerMessage } from "./closing-sticker.js";
 import { cleanText } from "./processor.js";
 
 export function buildDeliveryUnits(items, cleanOptions) {
   const units = [];
   for (const item of items || []) {
+    if (isStickerMessage(item?.data ?? item)) continue;
     const urls = attachmentUrls(item);
     if (urls.length) {
       const previous = units.at(-1);

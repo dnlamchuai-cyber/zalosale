@@ -61,7 +61,7 @@ test("sticker giữa 2 chùm chỉ-có-ảnh: bỏ qua, gom chung", () => {
   assert.equal(batches[0].length, 6);
 });
 
-test("sticker và nhãn phòng không mô tả được gom vào cụm trước", () => {
+test("sau sticker không có tin mở thì list phòng không nhập vào cụm trước", () => {
   const sticker = (sec) => ({ data: { msgType: "chat.sticker", content: "", ts: t0 + sec * 1000 } });
   const photo = (sec) => ({ data: { content: "", ts: t0 + sec * 1000, photo: "http://x/room.jpg" } });
   const opening = "🏠 NHÀ A29 - số 37 ngõ 136/6 Cầu Giấy. Phòng 405 giá 4tr5 đầy đủ nội thất, liên hệ 0981234567";
@@ -76,9 +76,9 @@ test("sticker và nhãn phòng không mô tả được gom vào cụm trước"
     areas: [{ id: "cg", keywords: ["cau giay"] }],
   });
   assert.equal(batches.length, 1);
-  assert.equal(batches[0].length, 4);
-  assert.equal(batches[0][1].data.msgType, "chat.sticker");
-  assert.equal(batches[0][2].data.content, "P302 - 4tr5");
+  assert.equal(batches[0].length, 1);
+  assert.ok(batches[0][0].data.content.includes("NHÀ A29"));
+  assert.equal(batches[0].some((item) => item.data.msgType === "chat.sticker"), false);
 });
 
 test("sticker trước tin mở mới vẫn tách cụm", () => {
@@ -96,7 +96,7 @@ test("sticker trước tin mở mới vẫn tách cụm", () => {
   assert.equal(batches.length, 2);
 });
 
-test("sticker nối nhãn và ảnh vào phòng đang chờ giới hạn", () => {
+test("sticker không có tin mở chỉ giữ cụm phòng trước sticker", () => {
   const sticker = { data: { msgType: "chat.sticker", content: "", ts: t0 + 1000 } };
   const photo = { data: { content: "", photo: "http://x/room.jpg", ts: t0 + 3000 } };
   const batches = segmentMessages([
@@ -106,8 +106,8 @@ test("sticker nối nhãn và ảnh vào phòng đang chờ giới hạn", () =>
     photo,
   ], { threadId: "t", gapMs: 120000, maxBatchItems: 1, maxWaitMs: 120000, areas: [] });
   assert.equal(batches.length, 1);
-  assert.equal(batches[0].length, 4);
-  assert.equal(batches[0][2].data.content, "P302 - 4tr5");
+  assert.equal(batches[0].length, 1);
+  assert.equal(batches[0][0].data.content, "P301 - 4tr5");
 });
 
 test("mở + sticker + ảnh: gom 1 cụm (bước gắn ảnh mồ côi)", () => {
@@ -120,8 +120,9 @@ test("mở + sticker + ảnh: gom 1 cụm (bước gắn ảnh mồ côi)", () =
     threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000, areas,
   });
   assert.equal(batches.length, 1);
-  assert.equal(batches[0].length, 9);
+  assert.equal(batches[0].length, 7);
   assert.ok(batches[0][0].data.content.includes("NHÀ A29"));
+  assert.equal(batches[0].some((item) => item.data.msgType === "chat.sticker"), false);
 });
 
 test("ảnh lẻ cuối run gộp vào cụm chữ trước nó (case ROCKET 14:51)", () => {
@@ -135,7 +136,7 @@ test("ảnh lẻ cuối run gộp vào cụm chữ trước nó (case ROCKET 14:
     threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000, areas, rules,
   });
   assert.equal(batches.length, 1);
-  assert.equal(batches[0].length, 10);
+  assert.equal(batches[0].length, 8);
   assert.ok(batches[0][0].data.content.includes("NHÀ A29"));
 });
 
@@ -210,7 +211,7 @@ test("batcher có rules: ngữ cảnh cụm mở mang đích + lý do để th�
     threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000, areas, rules,
   });
   assert.equal(batches.length, 1);
-  assert.equal(batches[0].length, 5);
+  assert.equal(batches[0].length, 4);
   assert.ok(batches[0][0].data.content.includes("NHÀ A29"));
   assert.deepEqual((batches[0].batchMeta?.inheritedDestinations || []).map((d) => d.id), ["cg"]);
   assert.equal(batches[0].batchMeta?.inheritedRouteVia, "dia-chi");
@@ -254,17 +255,69 @@ test("loadRulesCached: file đổi thì đọc lại (rule mới nhận ngay)", 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("BIZ-004 giữ nguyên: sticker, ảnh, mở, sticker thành 1 cụm mở đầu", () => {
+test("list phòng giữa hai sticker được chuyển sau tin mở; sticker không được gửi", () => {
   const sticker = (sec) => ({ data: { msgType: "chat.sticker", content: "", ts: t0 + sec * 1000 } });
   const ph = (sec) => ({ data: { content: "", ts: t0 + sec * 1000, photo: "http://x/y.jpg" } });
   const OPEN = "🏠 NHÀ A29 - số 37 ngõ 136/6 Triều Khúc. Phòng 405 gác xép giá 4tr5 đầy đủ nội thất điều hoà nóng lạnh máy giặt chung. Trống 1/10 vào ở luôn P406. Liên hệ 0981234567";
-  const msgs = [sticker(0), ph(1), ph(2), { data: { content: OPEN, ts: t0 + 3000 } }, sticker(4)];
+  const msgs = [sticker(0), { data: { content: "P301: 5tr5", ts: t0 + 1000 } }, { data: { content: "P302: 5tr8", ts: t0 + 2000 } }, { data: { content: OPEN, ts: t0 + 3000 } }, ph(4), sticker(5)];
   const batches = segmentMessages(msgs, {
     threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000, areas: [],
   });
   assert.equal(batches.length, 1);
   assert.ok(batches[0][0].data.content.includes("NHÀ A29"));
   assert.equal(batches[0].length, 4);
+  assert.equal(batches[0][1].data.content, "P301: 5tr5");
+  assert.equal(batches[0].some((item) => item.data.msgType === "chat.sticker"), false);
+});
+
+test("list giữa sticker và tin mở mới không bị gộp vào cụm trước", () => {
+  const sticker = (sec) => ({ data: { msgType: "chat.sticker", content: "", ts: t0 + sec * 1000 } });
+  const ph = (sec) => ({ data: { content: "", ts: t0 + sec * 1000, photo: `http://x/${sec}.jpg` } });
+  const opening = (name) => `🏠 ${name} - số 37 ngõ 136/6 Cầu Giấy. Phòng studio đủ nội thất giá 4tr5, liên hệ 0981234567`;
+  const batches = segmentMessages([
+    { data: { content: opening("NHÀ CŨ"), ts: t0 } }, ph(1),
+    sticker(2),
+    { data: { content: "P302: 5tr8", ts: t0 + 3000 } }, ph(4),
+    { data: { content: opening("NHÀ MỚI"), ts: t0 + 5000 } }, ph(6),
+    sticker(7),
+  ], { threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000, areas: [{ id: "cg", keywords: ["cau giay"] }] });
+  assert.equal(batches.length, 2);
+  assert.ok(batches[0][0].data.content.includes("NHÀ CŨ"));
+  assert.equal(batches[0].some((item) => item.data.content === "P302: 5tr8"), false);
+  assert.ok(batches[1][0].data.content.includes("NHÀ MỚI"));
+  assert.equal(batches[1][1].data.content, "P302: 5tr8");
+  assert.equal(batches[1].some((item) => item.data.msgType === "chat.sticker"), false);
+});
+
+test("bỏ thông báo lẻ nhưng giữ list và ảnh trước tin mở trong khoảng sticker", () => {
+  const sticker = (sec) => ({ data: { msgType: "chat.sticker", content: "", ts: t0 + sec * 1000 } });
+  const opening = "🏠 NHÀ MỚI - số 37 ngõ 136/6 Cầu Giấy. Phòng studio đủ nội thất giá 4tr5, liên hệ 0981234567";
+  const batches = segmentMessages([
+    sticker(0),
+    { data: { content: "Ai cần ib mình nhé", ts: t0 + 1000 } },
+    { data: { content: "P501: 8tr", ts: t0 + 2000 } },
+    { data: { content: "", photo: "http://x/p501.jpg", ts: t0 + 3000 } },
+    { data: { content: opening, ts: t0 + 4000 } },
+    sticker(5),
+  ], { threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000, areas: [{ id: "cg", keywords: ["cau giay"] }] });
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0][0].data.content, opening);
+  assert.equal(batches[0].some((item) => item.data.content === "Ai cần ib mình nhé"), false);
+  assert.equal(batches[0].some((item) => item.data.content === "P501: 8tr"), true);
+  assert.equal(batches[0].some((item) => item.data.photo === "http://x/p501.jpg"), true);
+});
+
+test("ảnh trước tin mở được chuyển sau tin mở, không để tin mở nằm giữa cụm", () => {
+  const ph = (sec) => ({ data: { content: "", ts: t0 + sec * 1000, photo: `http://x/${sec}.jpg` } });
+  const opening = "🏠 NHÀ A29 - số 37 ngõ 136/6 Cầu Giấy. Phòng studio đủ nội thất, giá 4tr5, liên hệ 0981234567";
+  const batches = segmentMessages([
+    ph(0),
+    { data: { content: opening, ts: t0 + 1000 } },
+    ph(2),
+  ], { threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000, areas: [{ id: "cg", keywords: ["cau giay"] }] });
+  assert.equal(batches.length, 1);
+  assert.ok(batches[0][0].data.content.includes("NHÀ A29"));
+  assert.equal(batches[0].length, 3);
 });
 
 test("ảnh lẻ ngay trước nhãn phòng thì gộp vào phòng (case TC HOME P301)", () => {
