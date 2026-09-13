@@ -552,6 +552,24 @@ const photoStickerOnlyResult = await photoStickerOnlyForwarder.forwardPayload({
 assertEq("sticker dạng chuỗi không biến cụm ảnh thành cụm có chữ", photoStickerOnlyResult.reason, "incomplete-visual-cluster");
 assertEq("cụm ảnh kèm sticker chuỗi không gọi Zalo", photoStickerOnlyApi._sent.length, 0);
 
+const noOpeningApi = makeApi();
+const noOpeningForwarder = new Forwarder(noOpeningApi, parseConfig({
+  sourceGroups: ["source"],
+  areas: [{ id: "no-opening-destination", matchAll: true }],
+  forward: { sendDelayMs: 0, retries: 0 },
+}), () => {});
+const noOpeningResult = await noOpeningForwarder.forwardPayload({
+  threadId: "no-opening-source",
+  source: "manual",
+  segmentType: "room",
+  items: [
+    { data: { content: "P101 1n1k 8tr" } },
+    { data: { normalUrl: "https://example.test/p101.jpg" } },
+  ],
+});
+assertEq("list phòng kèm ảnh nhưng không có tin mở không được gửi", noOpeningResult.reason, "missing-opening-segment");
+assertEq("cụm thiếu tin mở không gọi Zalo", noOpeningApi._sent.length, 0);
+
 // Lệnh gửi treo thì timeout thay vì kẹt cả hàng.
 const hangingApi = makeApi();
 hangingApi.sendMessage = async () => new Promise(() => {});

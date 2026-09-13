@@ -215,7 +215,7 @@ export async function scanGroupRange(api, threadId, range, forwarder, config) {
   const batches = await fetchRecentBatches(api, threadId, range, config);
   let count = 0;
   for (const items of batches) {
-    forwarder.enqueue({ threadId, items, source: "history" });
+    forwarder.enqueue({ threadId, items, source: "history", ...(items.batchMeta || {}) });
     count++;
   }
   return count;

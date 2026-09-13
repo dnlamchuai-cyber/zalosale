@@ -307,6 +307,36 @@ test("bỏ thông báo lẻ nhưng giữ list và ảnh trước tin mở trong 
   assert.equal(batches[0].some((item) => item.data.photo === "http://x/p501.jpg"), true);
 });
 
+test("ảnh trần sau sticker vẫn về cụm cũ trước tin mở mới", () => {
+  const sticker = (sec) => ({ data: { msgType: "chat.sticker", content: "", ts: t0 + sec * 1000 } });
+  const photo = (id, sec) => ({ data: { content: "", cliMsgId: id, normalUrl: `https://example.test/${id}.jpg`, ts: t0 + sec * 1000 } });
+  const opening = (name) => `🏠 ${name} - số 37 ngõ 136/6 Cầu Giấy. Phòng studio đủ nội thất giá 4tr5, liên hệ 0981234567`;
+  const batches = segmentMessages([
+    sticker(0), { data: { content: opening("NHÀ A"), ts: t0 + 1000 } }, photo("a101", 2),
+    sticker(3), photo("a102", 4), { data: { content: opening("NHÀ B"), ts: t0 + 5000 } },
+  ], { threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000, areas: [{ id: "cg", keywords: ["cau giay"] }] });
+  assert.equal(batches.length, 2);
+  assert.ok(batches[0][0].data.content.includes("NHÀ A"));
+  assert.equal(batches[0].some((item) => item.data.cliMsgId === "a102"), true);
+  assert.ok(batches[1][0].data.content.includes("NHÀ B"));
+});
+
+test("reply vào ảnh cũ gộp list và ảnh sau sticker về cụm gốc", () => {
+  const sticker = (sec) => ({ data: { msgType: "chat.sticker", content: "", ts: t0 + sec * 1000 } });
+  const photo = (id, sec) => ({ data: { content: "", cliMsgId: id, normalUrl: `https://example.test/${id}.jpg`, ts: t0 + sec * 1000 } });
+  const opening = "🏠 NHÀ A - số 37 ngõ 136/6 Cầu Giấy. Phòng studio đủ nội thất giá 4tr5, liên hệ 0981234567";
+  const batches = segmentMessages([
+    sticker(0), { data: { content: opening, ts: t0 + 1000 } }, photo("a101", 2),
+    sticker(3), { data: { content: "TRỤC 01", ts: t0 + 4000 } }, photo("t01", 5),
+    { data: { content: "TRỤC 02", ts: t0 + 6000 } }, photo("t02", 7),
+    { data: { content: "Ảnh trục này cùng toà", quote: { cliMsgId: "a101" }, ts: t0 + 8000 } },
+  ], { threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000, areas: [{ id: "cg", keywords: ["cau giay"] }] });
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0][0].data.content, opening);
+  assert.equal(batches[0].some((item) => item.data.content === "TRỤC 01"), true);
+  assert.equal(batches[0].some((item) => item.data.cliMsgId === "t02"), true);
+});
+
 test("ảnh trước tin mở được chuyển sau tin mở, không để tin mở nằm giữa cụm", () => {
   const ph = (sec) => ({ data: { content: "", ts: t0 + sec * 1000, photo: `http://x/${sec}.jpg` } });
   const opening = "🏠 NHÀ A29 - số 37 ngõ 136/6 Cầu Giấy. Phòng studio đủ nội thất, giá 4tr5, liên hệ 0981234567";

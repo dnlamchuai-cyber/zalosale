@@ -40,6 +40,11 @@ function sendWithTimeout(promise, ms, label) {
 }
 const MAX_PARALLEL_IMAGE_DOWNLOADS = 6; // WHY: tải 6 ảnh cùng lúc cho kịp cụm đông, vẫn nhẹ mạng.
 
+function isRecognizedOpeningSegment(payload) {
+  const segmentType = payload?.segmentType ?? payload?.items?.batchMeta?.segmentType;
+  return segmentType === "building" || segmentType === "lead";
+}
+
 function parseAttachmentLimit(error) {
   const message = String(error?.message || error || "");
   const match = message.match(/maximum\s+file(?:s)?\s+of\s+(\d+)/i);
@@ -384,6 +389,14 @@ export class Forwarder {
     const hasVideo = items.some((item) => videoUrls(item).length > 0);
     const hasVisualMedia = photos.length > 0 || hasVideo;
     const isStandalonePhotoCluster = photos.length > 0 && !hasVideo && !text.trim();
+    const segmentType = payload.segmentType ?? items?.batchMeta?.segmentType;
+
+    // Cụm lấy từ bot phải có tin mở thật. Nhãn P101 + ảnh là phần phụ của
+    // cụm, không được tự gửi nếu không có tin mở để nhận diện bài đăng.
+    if (this.config.forward.skipTextOnly !== false && segmentType && !isRecognizedOpeningSegment(payload)) {
+      logger.info(`Bỏ qua cụm không có tin mở từ nhóm ${payload.threadId}`);
+      return { sent: false, skipped: true, reason: "missing-opening-segment" };
+    }
 
     if (!text.trim() && !photos.length) {
       logger.debug("Bỏ qua: bài đăng không có text và ảnh");

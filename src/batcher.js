@@ -87,6 +87,10 @@ function newState(threadId) {
     stickerWindowOpen: false,
     stickerWindowHasOpening: false,
     stickerBuffer: [],
+    // Sau sticker đóng một cụm đã có tin mở, giữ phần đuôi ngắn để biết ảnh
+    // trần/reply còn thuộc cụm cũ hay là dữ liệu chờ tin mở mới.
+    postStickerBridge: false,
+    postStickerBuffer: [],
     contextStale: false,
     timer: null,
   };
@@ -125,6 +129,11 @@ export class Batcher extends EventEmitter {
     }
     const building = text ? describeBuilding(text, this.areas, this.rules) : { isBuilding: false, destinations: [], routeVia: null, matchedRules: [] };
     const startsBuilding = building.isBuilding;
+    if (state.postStickerBridge) {
+      this.addAfterStickerBridge(state, item, text, building);
+      this.schedule(state);
+      return;
+    }
     if (state.stickerWindowOpen) {
       this.addInsideStickerWindow(state, item, text, building);
       this.schedule(state);
@@ -211,6 +220,10 @@ export class Batcher extends EventEmitter {
       this.finishStickerWindow(state);
       return;
     }
+    if (state.postStickerBridge) {
+      this.finishPostStickerBridge(state);
+      return;
+    }
     // Chờ hết khoảng sticker mới quyết định: album trần thì thuộc cụm trước,
     // còn list phòng trước tin mở thì được chuyển xuống sau tin mở mới.
     state.stickerWindowOpen = true;
@@ -278,7 +291,17 @@ export class Batcher extends EventEmitter {
     if (state.roomPrefix.length) state.roomPrefix[state.roomPrefix.length - 1].push(...items);
   }
 
-  finishStickerWindow(state) {
+  finishStickerWindow(state, { terminal = false } = {}) {
+    if (state.stickerWindowHasOpening && !terminal) {
+      // Không xả ngay: ảnh trần ngay sau sticker hoặc reply vào ảnh cũ vẫn
+      // có thể thuộc cụm đang mở; tin mở mới sẽ chốt cụm một cách an toàn.
+      state.stickerWindowOpen = false;
+      state.stickerWindowHasOpening = false;
+      state.stickerBuffer = [];
+      state.postStickerBridge = true;
+      state.postStickerBuffer = [];
+      return;
+    }
     if (!state.stickerWindowHasOpening) {
       const buffered = state.stickerBuffer.splice(0);
       const onlyMedia = buffered.length > 0 && buffered.every((entry) => isMediaItem(entry));
@@ -291,6 +314,60 @@ export class Batcher extends EventEmitter {
     state.stickerWindowOpen = false;
     state.stickerWindowHasOpening = false;
     state.stickerBuffer = [];
+    state.stickerDelimited = false;
+  }
+
+  addAfterStickerBridge(state, item, text, building) {
+    const startsOpening = building.isBuilding || (text && isCommissionHeader(text));
+    if (!startsOpening) {
+      state.postStickerBuffer.push(item);
+      return;
+    }
+    const buffered = state.postStickerBuffer.splice(0);
+    const onlyMedia = buffered.length > 0 && buffered.every((entry) => isMediaItem(entry));
+    const repliesToCurrent = buffered.some((entry) => this.repliesToActiveItem(state, entry));
+    if (onlyMedia || repliesToCurrent) {
+      if (buffered.length) this.appendBufferedMediaToOpenCluster(state, buffered);
+      this.flushOpen(state);
+    } else {
+      this.flushOpen(state);
+      const roomItems = buffered.filter((entry) => isMediaItem(entry) || isRoomLabel(itemText(entry)));
+      if (roomItems.length) {
+        state.active = {
+          segmentType: roomItems.some((entry) => isRoomLabel(itemText(entry))) ? "room" : "generic",
+          items: roomItems,
+        };
+      }
+    }
+    state.buildingContext = null;
+    state.buildingKey = null;
+    state.postStickerBridge = false;
+    state.postStickerBuffer = [];
+    state.stickerDelimited = false;
+    if (building.isBuilding) this.startBuilding(state, item, building);
+    else this.startLead(state, item);
+  }
+
+  repliesToActiveItem(state, item) {
+    const quoteId = String(item?.data?.quote?.cliMsgId || "");
+    if (!quoteId) return false;
+    return (state.active?.items || []).some((entry) => String(entry?.data?.cliMsgId || "") === quoteId);
+  }
+
+  finishPostStickerBridge(state) {
+    const buffered = state.postStickerBuffer.splice(0);
+    const onlyMedia = buffered.length > 0 && buffered.every((entry) => isMediaItem(entry));
+    const repliesToCurrent = buffered.some((entry) => this.repliesToActiveItem(state, entry));
+    if (repliesToCurrent) {
+      this.appendBufferedMediaToOpenCluster(state, buffered);
+    } else if (onlyMedia) {
+      this.appendBufferedMediaToOpenCluster(state, buffered);
+    }
+    this.flushOpen(state);
+    state.buildingContext = null;
+    state.buildingKey = null;
+    state.postStickerBridge = false;
+    state.postStickerBuffer = [];
     state.stickerDelimited = false;
   }
 
@@ -455,16 +532,21 @@ export class Batcher extends EventEmitter {
   }
 
   openItemCount(state) {
-    const bufferedRoomCount = this.prefixItemCount(state) + state.stickerBuffer.length;
+    const bufferedRoomCount = this.prefixItemCount(state) + state.stickerBuffer.length + state.postStickerBuffer.length;
     return bufferedRoomCount + (state.active?.items.length ?? 0) + state.pending.length;
   }
 
   schedule(state) {
     if (!this.openItemCount(state)) return;
     const structured = state.stickerDelimited || state.buildingContext || state.active?.segmentType !== "generic";
-    const wait = structured ? this.maxWaitMs : Math.min(this.windowMs, this.maxWaitMs);
+    // Cầu nối sau sticker chỉ cần đợi một nhịp chat để nhận ảnh/reply tiếp;
+    // không để gửi live phải chờ hết maxWaitMs (mặc định 2 phút).
+    const wait = state.postStickerBridge
+      ? Math.min(this.windowMs, this.maxWaitMs)
+      : structured ? this.maxWaitMs : Math.min(this.windowMs, this.maxWaitMs);
     state.timer = setTimeout(() => {
-      if (state.stickerWindowOpen) this.finishStickerWindow(state);
+      if (state.stickerWindowOpen) this.finishStickerWindow(state, { terminal: true });
+      else if (state.postStickerBridge) this.finishPostStickerBridge(state);
       else this.flushOpen(state);
       state.contextStale = false;
       state.timer = null;
@@ -477,7 +559,8 @@ export class Batcher extends EventEmitter {
     const state = this.batches.get(id);
     if (!state) return;
     clearTimeout(state.timer);
-    if (state.stickerWindowOpen) this.finishStickerWindow(state);
+    if (state.stickerWindowOpen) this.finishStickerWindow(state, { terminal: true });
+    else if (state.postStickerBridge) this.finishPostStickerBridge(state);
     else this.flushOpen(state);
     this.batches.delete(id);
   }
