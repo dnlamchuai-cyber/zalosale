@@ -337,6 +337,65 @@ test("reply vào ảnh cũ gộp list và ảnh sau sticker về cụm gốc", (
   assert.equal(batches[0].some((item) => item.data.cliMsgId === "t02"), true);
 });
 
+test("reply mô tả ảnh được đặt trước đúng ảnh trong cùng cụm", () => {
+  const opening = "🏠 Địa chỉ: 37 ngõ 136 Cầu Giấy. Phòng studio đầy đủ nội thất, giá 4tr5, liên hệ 0981234567.";
+  const photo = (id, sec) => ({ data: { content: "", cliMsgId: id, photo: `http://x/${id}.jpg`, ts: t0 + sec * 1000 } });
+  const batches = segmentMessages([
+    text(opening, 0),
+    photo("p101", 1),
+    { data: { content: "P101 hướng ban công", quote: { cliMsgId: "p101" }, ts: t0 + 2000, uidFrom: "nguoi-2" } },
+    text("Cửa sổ rộng", 3),
+    photo("p102", 4),
+  ], { threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000, areas: [{ id: "cg", keywords: ["cau giay"] }] });
+  assert.equal(batches.length, 1);
+  assert.deepEqual(
+    batches[0].map((item) => item.data.content || item.data.cliMsgId),
+    [opening, "P101 hướng ban công", "p101", "Cửa sổ rộng", "p102"],
+  );
+});
+
+test("list và ảnh từ người khác vẫn nối vào tin mở cùng nhóm nguồn", () => {
+  const opening = "T210 - 🌹40\nKhai Trương Toà Mới - Ngõ 78 Võ Chí Công, Tây Hồ. Trục phòng đang trống, studio đầy đủ nội thất, điện nước rõ ràng.";
+  const batches = segmentMessages([
+    { data: { content: opening, ts: t0, uidFrom: "nguoi-1" } },
+    { data: { content: "Trục 01", ts: t0 + 1000, uidFrom: "nguoi-2" } },
+    { data: { content: "", photo: "http://x/truc-01.jpg", ts: t0 + 2000, uidFrom: "nguoi-2" } },
+    { data: { content: "Trục 04", ts: t0 + 3000, uidFrom: "nguoi-2" } },
+    { data: { content: "", photo: "http://x/truc-04.jpg", ts: t0 + 4000, uidFrom: "nguoi-2" } },
+  ], { threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000, areas: [{ id: "th", keywords: ["tay ho"] }] });
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0].batchMeta?.segmentType, "building");
+  assert.equal(batches[0].filter((item) => item.data.photo).length, 2);
+});
+
+test("tin mở reply vào ảnh được nhận diện từ dòng ghim vị trí, kể cả sau sticker", () => {
+  const sticker = (sec) => ({ data: { msgType: "chat.sticker", content: "", ts: t0 + sec * 1000 } });
+  const photo = { data: { content: "", cliMsgId: "p601", photo: "http://x/p601.jpg", ts: t0 + 1000 } };
+  const opening = "🌹40% HĐ 12T R444\n1N1K Cập Nhật Giảm Giá\n📍Tân Ấp-Ba Đình\n1 ngủ + 1 khách, thang máy, phòng đầy đủ nội thất. P601 có thể xem luôn. Giá 9tr5. Điện nước rõ ràng.";
+  const batches = segmentMessages([
+    sticker(0), photo,
+    { data: { content: opening, quote: { cliMsgId: "p601" }, ts: t0 + 2000, uidFrom: "nguoi-2" } },
+    sticker(3),
+  ], { threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000, areas: [{ id: "bd", keywords: ["ba dinh"] }] });
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0][0].data.content, opening);
+  assert.equal(batches[0][1].data.cliMsgId, "p601");
+  assert.equal(batches[0].batchMeta?.segmentType, "building");
+});
+
+test("tin mở reply vào ảnh không có sticker cũng đưa tin mở lên đầu", () => {
+  const photo = { data: { content: "", cliMsgId: "p701", photo: "http://x/p701.jpg", ts: t0 } };
+  const opening = "📍Tân Ấp-Ba Đình. Phòng 1 ngủ 1 khách, đầy đủ nội thất, giá 9tr5, điện nước rõ ràng và có thể xem ngay.";
+  const batches = segmentMessages([
+    photo,
+    { data: { content: opening, quote: { cliMsgId: "p701" }, ts: t0 + 1000, uidFrom: "nguoi-2" } },
+  ], { threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000, areas: [{ id: "bd", keywords: ["ba dinh"] }] });
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0][0].data.content, opening);
+  assert.equal(batches[0][1].data.cliMsgId, "p701");
+  assert.equal(batches[0].batchMeta?.segmentType, "building");
+});
+
 test("ảnh trước tin mở được chuyển sau tin mở, không để tin mở nằm giữa cụm", () => {
   const ph = (sec) => ({ data: { content: "", ts: t0 + sec * 1000, photo: `http://x/${sec}.jpg` } });
   const opening = "🏠 NHÀ A29 - số 37 ngõ 136/6 Cầu Giấy. Phòng studio đủ nội thất, giá 4tr5, liên hệ 0981234567";
@@ -382,6 +441,56 @@ test("quét lịch sử: mã phòng + chùm ảnh gom vào 1 cụm dưới tin m
   assert.equal(batches.length, 1);
   assert.ok(batches[0].length >= 12);
   assert.ok(batches[0][0].data.content.includes("639 Hoàng Hoa Thám"));
+});
+
+test("lịch sử nối danh sách phòng và ảnh vào tin mở trước đó khi chỉ ngắt quãng ngắn", () => {
+  const opening = "Khai Trương Toà Mới - Ngõ 78 Võ Chí Công, Tây Hồ. Trục 1,2,3 đang trống, phòng studio đầy đủ nội thất, điện nước rõ ràng.";
+  const batches = segmentMessages([
+    text(opening, 0),
+    text("Trục 01\nTrục 04\nP803\nP504,404", 137),
+    photo(138),
+    photo(139),
+  ], {
+    threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000,
+    areas: [{ id: "th", keywords: ["tay ho"] }],
+  });
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0][0].data.content, opening);
+  assert.equal(batches[0].filter((item) => item.data.photo).length, 2);
+  assert.equal(batches[0].some((item) => item.data.content === "Trục 01\nTrục 04\nP803\nP504,404"), true);
+});
+
+test("ảnh sau tin mở vẫn về cụm trước, không bị bài mở xuất hiện muộn chặn lại", () => {
+  const firstOpening = "Địa chỉ: 122 Võ Chí Công, Tây Hồ. Studio đầy đủ nội thất, giá 7tr7.";
+  const nextOpening = "Địa chỉ: 75 Trịnh Công Sơn, Tây Hồ. Studio mới, giá 6tr.";
+  const batches = segmentMessages([
+    text(firstOpening, 0),
+    photo(135),
+    text(nextOpening, 627),
+  ], {
+    threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000,
+    areas: [{ id: "th", keywords: ["tay ho"] }],
+  });
+  assert.equal(batches.length, 2);
+  assert.equal(batches[0][0].data.content, firstOpening);
+  assert.equal(batches[0].filter((item) => item.data.photo).length, 1);
+  assert.equal(batches[1][0].data.content, nextOpening);
+});
+
+test("list phòng có ảnh nối sau tối đa mười phút khi chưa có tin mở mới", () => {
+  const opening = "Khai trương nhà mới. Địa chỉ: 123 Thụy Khuê, Tây Hồ. Giá theo bảng giá bên dưới, studio đầy đủ nội thất.";
+  const batches = segmentMessages([
+    text(opening, 0),
+    text("Trục 01\nTrục 02", 383),
+    photo(384),
+  ], {
+    threadId: "t", gapMs: 120000, maxBatchItems: 30, maxWaitMs: 120000,
+    areas: [{ id: "th", keywords: ["tay ho"] }],
+  });
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0][0].data.content, opening);
+  assert.equal(batches[0].some((item) => item.data.content === "Trục 01\nTrục 02"), true);
+  assert.equal(batches[0].filter((item) => item.data.photo).length, 1);
 });
 
 test("cap nhỏ cũng giữ phòng chờ tin mở (không xả lẻ nữa)", () => {

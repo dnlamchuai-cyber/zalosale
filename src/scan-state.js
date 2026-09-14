@@ -3,6 +3,7 @@
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
+import { classifyScanPost } from "./scan-post-status.js";
 
 function toPersistedRaw(raw) {
   if (!(raw instanceof Map)) return [];
@@ -26,14 +27,26 @@ function normalizeScan(value) {
       batchMeta: entry.batchMeta && typeof entry.batchMeta === "object" ? entry.batchMeta : {},
     });
   }
+  const posts = value.posts.map((post) => {
+    if (!post || ["sent", "duplicate", "error"].includes(post.status)) return post;
+    const entry = raw.get(String(post.id));
+    if (!entry) return post;
+    const status = classifyScanPost({
+      items: entry.items,
+      batchMeta: entry.batchMeta,
+      undetermined: Boolean(post.undetermined || post.status === "undetermined"),
+    });
+    return { ...post, status };
+  });
   return {
     scanId: value.scanId,
     scanQueryKey: String(value.scanQueryKey || ""),
     range: value.range && typeof value.range === "object" ? value.range : { label: "" },
     groups: Number(value.groups) || 0,
-    posts: value.posts,
+    posts,
     raw,
     fullBuildings: Array.isArray(value.fullBuildings) ? value.fullBuildings : [],
+    historyCoverage: Array.isArray(value.historyCoverage) ? value.historyCoverage : [],
   };
 }
 
@@ -64,6 +77,7 @@ export async function writePersistedScan(filePath, scan) {
     posts: scan.posts,
     raw: toPersistedRaw(scan.raw),
     fullBuildings: scan.fullBuildings || [],
+    historyCoverage: scan.historyCoverage || [],
     savedAt: Date.now(),
   };
   const temporaryPath = `${filePath}.tmp`;
@@ -82,6 +96,7 @@ export function writePersistedScanSync(filePath, scan) {
     posts: scan.posts,
     raw: toPersistedRaw(scan.raw),
     fullBuildings: scan.fullBuildings || [],
+    historyCoverage: scan.historyCoverage || [],
     savedAt: Date.now(),
   };
   const temporaryPath = `${filePath}.tmp`;

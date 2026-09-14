@@ -3,7 +3,7 @@
 // SPEC: docs/03_SPEC/SPEC-003.md
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyAreas, detectHanoiDistrict, findAreaMatch } from "./classifier.js";
+import { classifyAreas, classifyAreasDetailed, detectHanoiDistrict, findAreaMatch } from "./classifier.js";
 import { parseConfig } from "./config.js";
 import { Forwarder } from "./forwarder.js";
 import { Batcher } from "./batcher.js";
@@ -109,4 +109,30 @@ test("recognizes Hoài Đức and Hòa Lạc from an address or explicit nearby 
   assert.equal(detectHanoiDistrict("Địa chỉ: An Khánh, Hoài Đức")?.district, "Hoài Đức");
   assert.equal(detectHanoiDistrict("Địa chỉ: Hòa Lạc, Hà Nội")?.district, "Hòa Lạc");
   assert.deepEqual(ids(classifyAreas("Tiện ích: gần Hòa Lạc", [hoaLac])), ["hoa-lac"]);
+});
+
+test("routes address titles written without an explicit Địa chỉ label", () => {
+  const areas = [
+    { id: "cau-giay", routingKey: "cau-giay", keywords: ["cau giay"] },
+    { id: "thanh-xuan", routingKey: "thanh-xuan", keywords: ["thanh xuan"] },
+    { id: "hoang-mai", routingKey: "hoang-mai", keywords: ["hoang mai"] },
+    { id: "hai-ba-trung", routingKey: "hai-ba-trung", keywords: ["hai ba trung"] },
+  ];
+  const rules = [
+    { normalizedName: "minh khai", routingKeys: ["hai-ba-trung"], enabled: true },
+    { normalizedName: "nguyen xien", routingKeys: ["thanh-xuan", "hoang-mai"], enabled: true },
+  ];
+
+  assert.deepEqual(
+    ids(classifyAreasDetailed("🌹30 - H168\n381/64 Nguyễn Khang - Cầu Giấy", areas, null, rules).destinations),
+    ["cau-giay"],
+  );
+  assert.deepEqual(
+    ids(classifyAreasDetailed("Cho thuê căn hộ Green Pearl, Minh Khai", areas, null, rules).destinations),
+    ["hai-ba-trung"],
+  );
+  assert.deepEqual(
+    ids(classifyAreasDetailed("Cho thuê nhà mặt phố Nguyễn Xiển, Thanh Xuân", areas, null, rules).destinations),
+    ["thanh-xuan"],
+  );
 });

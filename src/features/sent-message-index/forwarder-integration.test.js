@@ -34,6 +34,41 @@ assert.equal(recorded.length, 1);
 assert.equal(recorded[0].sourceGroupId, "source-a");
 assert.equal(recorded[0].destinationGroup.id, "dest-a");
 
+const deliveredTexts = [];
+const excludedReply = new Forwarder(
+  { sendMessage: async (message) => { deliveredTexts.push(typeof message === "string" ? message : message.msg); return { messageId: "zalo-filter" }; } },
+  { ...structuredClone(config), excludeKeywords: ["@all"] },
+);
+const excludedReplyResult = await excludedReply.forwardPayload({
+  threadId: "source-a",
+  source: "manual",
+  items: [
+    { data: { content: "Địa chỉ: Cầu Giấy. Phòng studio đầy đủ nội thất." } },
+    { data: { content: "@Thương Khánh 78 Võ Chí Công GIẢM GIÁ CHÀO KHÁCH @All", quote: { cliMsgId: "photo-1" } } },
+    { data: { content: "Trục 01 còn trống." } },
+  ],
+});
+assert.equal(excludedReplyResult.sent, true);
+assert.equal(deliveredTexts.some((value) => value.includes("@All")), false);
+assert.equal(deliveredTexts.includes("Trục 01 còn trống."), true);
+
+const unquotedExcludedText = new Forwarder(
+  { sendMessage: async (message) => { deliveredTexts.push(typeof message === "string" ? message : message.msg); return { messageId: "zalo-filter-unquoted" }; } },
+  { ...structuredClone(config), excludeKeywords: ["@all"] },
+);
+const unquotedExcludedResult = await unquotedExcludedText.forwardPayload({
+  threadId: "source-a",
+  source: "manual",
+  items: [
+    { data: { content: "Địa chỉ: Cầu Giấy. Phòng studio đầy đủ nội thất." } },
+    { data: { content: "Thông báo @All vui lòng không gửi." } },
+    { data: { content: "Trục 04 còn trống." } },
+  ],
+});
+assert.equal(unquotedExcludedResult.sent, true);
+assert.equal(deliveredTexts.some((value) => value.includes("Thông báo @All")), false);
+assert.equal(deliveredTexts.includes("Trục 04 còn trống."), true);
+
 const resendDestinations = [];
 const resend = new Forwarder(
   { sendMessage: async (message, destinationId) => { resendDestinations.push(destinationId); return { messageId: "zalo-resend" }; } },

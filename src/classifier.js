@@ -6,9 +6,15 @@ import { matchRules } from "./features/location-rules/service.js";
 
 const ADDRESS_MARKER_PATTERN = /(?:^|[^a-z0-9])(?:dia\s*chi|d\/c|dc)(?=\s|:|-|$)/i;
 // WHY: tin thực tế bắt đầu thẳng bằng Ngõ/Ngách/Đường/Phố/Số/KĐT/Chung cư/Hẻm thay vì chữ "Địa chỉ"
-const ADDRESS_START_PATTERN = /^(?:ngo|ngach|hem|duong|pho|kdt|khu\s*do\s*thi|chung\s*cu|toa|so\s*\d|dia\s*chi|d\/c|dc)\b/i;
+const ADDRESS_START_PATTERN = /^(?:ngo|ngach|hem|duong|pho|kdt|khu\s*do\s*thi|chung\s*cu|toa|so\s*\d|\d{1,4}\s+[a-z]{2,}|dia\s*chi|d\/c|dc)\b/i;
 // WHY: tin kiểu "Cho thuê nhà ngõ 172 Xuân Đỉnh..." mở đầu bằng lời rao, địa chỉ nằm giữa dòng
 const ADDRESS_INLINE_PATTERN = /(?:^|[^a-z0-9])(?:ngo|ngach|hem|duong|pho)\s*\d|(?:^|[^a-z0-9])so\s+\d/i;
+// Tin nguồn thường viết “Cho thuê phòng đơn 281 Bùi Xương Trạch” mà không có nhãn Địa chỉ.
+const RENTAL_HOUSE_NUMBER_PATTERN = /(?:^|[^a-z0-9])(?:cho\s*thue|phong\s+(?:don|tro))[^\n]{0,80}?\b(?:so\s*)?\d{1,4}\s+[a-z]/i;
+// Nhiều nguồn tách mã tòa và địa chỉ thành hai tin: “H168” rồi “381/64 Nguyễn Khang”.
+const BARE_SLASH_ADDRESS_PATTERN = /(?:^|[^a-z0-9])\d{1,4}(?:\s*\/\s*\d{1,4})+\s+[a-z]/i;
+// Tiêu đề rao thường chính là dòng địa chỉ, dù không ghi “Địa chỉ”.
+const RENTAL_ADDRESS_TITLE_PATTERN = /^\s*(?:cho\s*thue|phong\s*tro|can\s*ho|nha\s*mat\s*pho)\b/i;
 const EMOJI_MARKER_PATTERN = /[📍🏡📌]/;
 
 function areaAliases(area) {
@@ -27,7 +33,10 @@ export function extractAddressText(text) {
       const normalized = normalizeText(line);
       return ADDRESS_MARKER_PATTERN.test(normalized)
         || ADDRESS_START_PATTERN.test(normalized)
-        || ADDRESS_INLINE_PATTERN.test(normalized);
+        || ADDRESS_INLINE_PATTERN.test(normalized)
+        || RENTAL_HOUSE_NUMBER_PATTERN.test(normalized)
+        || BARE_SLASH_ADDRESS_PATTERN.test(normalized)
+        || RENTAL_ADDRESS_TITLE_PATTERN.test(normalized);
     })
     .join("\n");
 }

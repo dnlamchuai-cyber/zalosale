@@ -21,6 +21,21 @@ function itemText(item) {
   return typeof item?.data?.content === "string" ? item.data.content.trim() : "";
 }
 
+function quoteMessageId(item) {
+  return String(item?.data?.quote?.cliMsgId || "");
+}
+
+function insertReplyBeforeQuotedMedia(items, item) {
+  const quoteId = quoteMessageId(item);
+  if (!quoteId) return false;
+  const quotedIndex = (items || []).findIndex((entry) =>
+    String(entry?.data?.cliMsgId || "") === quoteId && isMediaItem(entry)
+  );
+  if (quotedIndex < 0) return false;
+  items.splice(quotedIndex, 0, item);
+  return true;
+}
+
 export function isMediaItem(item) {
   const data = item?.data ?? item ?? {};
   return photoUrls(item).length > 0 || Boolean(data.photo);
@@ -52,7 +67,9 @@ function hasRoomDetail(text) {
 }
 
 function hasAddress(text) {
-  return /\b(?:dia chi|ngach|ngo|duong|pho|so\s+\d)\b/i.test(normalizeText(text));
+  const raw = String(text ?? "");
+  const hasPinnedLocation = /(?:^|\r?\n)\s*(?:📍|📌)\s*\S[^\r\n]{2,}/.test(raw);
+  return hasPinnedLocation || /\b(?:dia chi|ngach|ngo|duong|pho|so\s+\d)\b/i.test(normalizeText(raw));
 }
 
 function describeBuilding(text, areas, rules = []) {
@@ -412,6 +429,7 @@ export class Batcher extends EventEmitter {
   }
 
   appendItem(state, item) {
+    if (state.active?.items && insertReplyBeforeQuotedMedia(state.active.items, item)) return;
     if (state.contextStale && !state.active && !state.buildingContext && state.roomPrefix.length) {
       state.roomPrefix[state.roomPrefix.length - 1].push(item);
       return;

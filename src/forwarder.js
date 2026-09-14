@@ -95,6 +95,14 @@ function isTextItem(item) {
   return typeof item?.data?.content === "string" && !isStickerMessage(item?.data ?? item);
 }
 
+/** Loại từng tin chữ theo từ khóa, không hủy cả cụm còn tin/ảnh hợp lệ. */
+export function filterExcludedTextItems(items, excludeKeywords = []) {
+  return (items || []).filter((item) => {
+    if (!isTextItem(item)) return true;
+    return !isExcluded(item.data.content, excludeKeywords);
+  });
+}
+
 /** ID tin Zalo trong cụm (msgId/cliMsgId) — để quét lại loại đúng tin cũ đã gửi. */
 export function messageIdsOf(items) {
   const ids = [];
@@ -230,6 +238,9 @@ export class Forwarder {
    * Trả về: { text, clean, area, areaName, kw, photoCount, excluded, fullBuilding }
    */
   describePost(items, inheritedDestinations = [], inheritedReason = null, inheritedMatched = []) {
+    const originalTextCount = (items || []).filter(isTextItem).length;
+    items = filterExcludedTextItems(items, this.config.excludeKeywords);
+    const hasRemainingText = items.some(isTextItem);
     const text = items.filter(isTextItem).map((it) => it.data.content).join("\n\n");
     const photos = items.filter((it) => photoUrls(it).length > 0);
     const fullBuilding = parseFullBuildingNotice(text);
@@ -260,7 +271,9 @@ export class Forwarder {
       kw: area ? (area.keywords || []).join(", ") : "",
       photoCount: photos.length,
       photoUrls: extractPhotoUrls(items),
-      excluded: isExcluded(text, this.config.excludeKeywords),
+      // Chỉ đánh dấu loại trừ nếu mọi tin chữ của cụm đều đã bị loại.
+      // Một reply/thông báo bị loại không được làm mờ cả cụm còn lại.
+      excluded: originalTextCount > 0 && !hasRemainingText,
       price: price?.first ?? null,
       inPriceRange,
       isFullBuilding: Boolean(fullBuilding),
@@ -382,7 +395,9 @@ export class Forwarder {
    * Flow: gom text → loại trừ → làm sạch → nhận định khu vực → download ảnh → gửi
    */
   async forwardPayload(payload) {
-    const { items } = payload;
+    const items = filterExcludedTextItems(payload.items, this.config.excludeKeywords);
+    const excludedItemCount = (payload.items?.length || 0) - items.length;
+    if (excludedItemCount) logger.info(`Bỏ ${excludedItemCount} tin chứa từ khoá loại trừ khỏi cụm ${payload.threadId}`);
 
     const text = items.filter(isTextItem).map((it) => it.data.content).join("\n\n");
     const photos = items.filter((it) => photoUrls(it).length > 0);
@@ -458,23 +473,11 @@ export class Forwarder {
     const urls = deliveryUnits.flatMap((unit) => (unit.urls || []).map(({ url }) => url));
     const files = [];
     try {
-      const mediaRequests = deliveryUnits.flatMap((unit, unitIndex) =>
-        unit.kind === "media"
-          ? unit.urls.map((media, mediaIndex) => ({ unitIndex, mediaIndex, ...media })).filter((media) => media.type !== "video")
-          : []
-      );
-      const downloadedFiles = await mapWithConcurrency(
-        mediaRequests,
-        MAX_PARALLEL_IMAGE_DOWNLOADS,
-        ({ url, type }) => this.download(url, type),
-      );
-      const downloadedMedia = new Map();
-      downloadedFiles.forEach((file, requestIndex) => {
-        if (!file) return;
-        const { unitIndex, mediaIndex } = mediaRequests[requestIndex];
-        files.push(file);
-        downloadedMedia.set(mediaKey(unitIndex, mediaIndex), file);
-      });
+      // Cấu hình có thể đổi lúc tải trước: chỉ dùng media khớp kế hoạch gửi hiện tại.
+      const media = payload.preparedMedia?.key === JSON.stringify(deliveryUnits)
+        ? payload.preparedMedia : await this.preparePayloadMedia(payload);
+      files.push(...media.files);
+      const downloadedMedia = media.downloadedMedia;
       const preparedUnits = prepareDeliveryUnits(deliveryUnits, downloadedMedia);
       const hasVideo = preparedUnits.some((unit) => unit.kind === "video");
       const imageTotal = preparedUnits
@@ -552,10 +555,42 @@ export class Forwarder {
     }
   }
 
-  async download(url, mediaType = "image", timeoutMs = 30000) {
+  async preparePayloadMedia(payload, signal) {
+    const items = filterExcludedTextItems(payload.items, this.config.excludeKeywords);
+    const deliveryUnits = buildDeliveryUnits(items, {
+      deleteLines: this.config.deleteLines,
+      removePercentLines: this.config.filter.removePercentLines,
+      removePriceLines: this.config.filter.removePriceLines,
+    });
+    const requests = deliveryUnits.flatMap((unit, unitIndex) => unit.kind === "media" && !payload.videoOnly
+      ? unit.urls.map((media, mediaIndex) => ({ unitIndex, mediaIndex, ...media })).filter((media) => media.type !== "video") : []);
+    const downloads = await mapWithConcurrency(requests, MAX_PARALLEL_IMAGE_DOWNLOADS, async ({ url, type }) => {
+      if (signal?.aborted) return { file: null };
+      try { return { file: await this.download(url, type, 30000, signal) }; }
+      catch (error) { return { error }; }
+    });
+    const files = downloads.map((download) => download.file).filter(Boolean);
+    const failure = downloads.find((download) => download.error);
+    if (failure) {
+      this.releasePreparedMedia({ files });
+      throw failure.error;
+    }
+    const downloadedMedia = new Map();
+    downloads.forEach(({ file }, index) => {
+      if (file) downloadedMedia.set(mediaKey(requests[index].unitIndex, requests[index].mediaIndex), file);
+    });
+    return { key: JSON.stringify(deliveryUnits), files, downloadedMedia };
+  }
+
+  releasePreparedMedia(media) {
+    for (const file of media?.files || []) fs.rmSync(file, { force: true });
+  }
+
+  async download(url, mediaType = "image", timeoutMs = 30000, signal) {
     try {
       // WHY: CDN treo là cả hàng đợi đứng theo — quá timeout thì bỏ file đó, đi tiếp.
-      const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(timeoutMs) });
+      const timeout = AbortSignal.timeout(timeoutMs);
+      const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = Buffer.from(await res.arrayBuffer());
       const urlExtension = url.match(/\.([a-z0-9]+)(?:[?#]|$)/i)?.[1]?.toLowerCase();

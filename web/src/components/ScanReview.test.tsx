@@ -39,6 +39,20 @@ describe("ScanReviewPanel", () => {
     }));
   });
 
+  it("hiển thị cảnh báo lịch sử thiếu khi quét và sau tải lại", async () => {
+    const historyCoverage = [{ threadId: "source", sourceName: "Kho phòng A", complete: false, reason: "no_progress", received: 1500, oldestTs: Date.now() }];
+    control.mockResolvedValue({ ok: true, scanId: "partial", range: "14/09/2026", groups: 1, total: 0, posts: [], historyCoverage });
+    const view = render(<ScanReviewPanel defaultDays={1} />);
+    fireEvent.click(screen.getByRole("button", { name: "🔍 Quét tin" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Chưa xác minh đủ lịch sử");
+    expect(screen.getByRole("alert")).toHaveTextContent("Kho phòng A");
+    expect(screen.getByRole("alert")).toHaveTextContent("1.500");
+    view.unmount();
+    control.mockResolvedValue({ ok: true, scan: { scanId: "partial", range: "14/09/2026", posts: [], historyCoverage } });
+    render(<ScanReviewPanel defaultDays={1} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Kho phòng A");
+  });
+
   it("chỉ gửi đúng nhóm nguồn được chọn khi quét", async () => {
     render(<ScanReviewPanel defaultDays={1} sourceGroups={["Nguồn A", "Nguồn B"]} />);
 
@@ -66,9 +80,13 @@ describe("ScanReviewPanel", () => {
           { text: "P404", photoUrls: [], ts: Date.now() + 2 },
         ],
       }, {
-        id: "post-2", tid: "source-2", name: "Nguồn khác", clean: "Mã R152",
+        id: "post-2", tid: "source-2", name: "Nguồn khác", clean: "Địa chỉ: Yên Xá",
+        areaName: null, destinationNames: [], kw: "", photos: 1, photoUrls: ["https://example.test/yen-xa.jpg"], price: null,
+        commissionPercent: null, inPriceRange: true, ts: Date.now() - 1000, clusterItems: [], status: "missing_location" as const,
+      }, {
+        id: "post-3", tid: "source-3", name: "Nguồn thông báo", clean: "Thông báo giờ xem phòng",
         areaName: null, destinationNames: [], kw: "", photos: 0, photoUrls: [], price: null,
-        commissionPercent: null, inPriceRange: true, ts: Date.now() - 1000, clusterItems: [], status: "undetermined" as const,
+        commissionPercent: null, inPriceRange: true, ts: Date.now() - 2000, clusterItems: [], status: "text_only" as const,
       }],
     });
     render(<ScanReviewPanel defaultDays={1} areas={[{ keywords: ["cau giay"], groupLink: "", id: "dest-cau-giay" }]} />);
@@ -76,15 +94,16 @@ describe("ScanReviewPanel", () => {
 
     expect(await screen.findByText("40%")).toBeInTheDocument();
     expect(screen.getAllByText("Chưa gửi").length).toBeGreaterThan(1);
-    expect(screen.getAllByText("Chưa xác định").length).toBeGreaterThan(1);
+    expect(screen.getByText("Thiếu địa danh · cần kiểm tra")).toBeInTheDocument();
+    expect(screen.getByText("Chỉ có chữ · bỏ qua")).toBeInTheDocument();
     expect(screen.getByText("Cầu Giấy · Dịch Vọng")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Lọc ảnh"), { target: { value: "yes" } });
-    expect(screen.getByText("Đang xem 1/2 bài. “Gửi tất cả” vẫn gửi toàn bộ kết quả quét.")).toBeInTheDocument();
+    expect(screen.getByText("Đang xem 2/3 bài. “Gửi tất cả” vẫn gửi toàn bộ kết quả quét.")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Lọc từ khóa đích"), { target: { value: "cau giay" } });
-    expect(screen.getByText("Đang xem 1/2 bài. “Gửi tất cả” vẫn gửi toàn bộ kết quả quét.")).toBeInTheDocument();
+    expect(screen.getByText("Đang xem 1/3 bài. “Gửi tất cả” vẫn gửi toàn bộ kết quả quét.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Xóa lọc" }));
-    fireEvent.change(screen.getByLabelText("Lọc trạng thái"), { target: { value: "undetermined" } });
-    expect(screen.getByText("Đang xem 1/2 bài. “Gửi tất cả” vẫn gửi toàn bộ kết quả quét.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Lọc trạng thái"), { target: { value: "missing_location" } });
+    expect(screen.getByText("Đang xem 1/3 bài. “Gửi tất cả” vẫn gửi toàn bộ kết quả quét.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Xóa lọc" }));
     fireEvent.click(screen.getByRole("button", { name: "Xem ảnh 1 của tin Mã R151" }));
     expect(screen.getByRole("dialog", { name: "Xem ảnh phòng" })).toBeInTheDocument();
@@ -100,6 +119,24 @@ describe("ScanReviewPanel", () => {
     control.mockResolvedValueOnce({ ok: true, sent: 1 });
     fireEvent.click(screen.getByRole("button", { name: "📤 Gửi nhóm cau giay (1)" }));
     await waitFor(() => expect(control).toHaveBeenCalledWith(expect.objectContaining({ action: "forwardSel", destinationKeyword: "cau giay", indexes: [0] })));
+  });
+
+  it("hiển thị riêng thông báo hết phòng thay vì ghi chung là chỉ có chữ", async () => {
+    control.mockResolvedValueOnce({ ok: true, scan: null }).mockResolvedValueOnce({
+      ok: true,
+      scanId: "scan-full",
+      range: "04/09/2026",
+      groups: 1,
+      total: 1,
+      posts: [{
+        id: "post-full", tid: "source", name: "Nguồn thông báo", clean: "358/109 Bùi Xương Trạch full ❌❌❌",
+        areaName: null, destinationNames: [], kw: "", photos: 0, photoUrls: [], price: null,
+        commissionPercent: null, inPriceRange: true, ts: Date.now(), clusterItems: [], status: "building_full" as any,
+      }],
+    });
+    render(<ScanReviewPanel defaultDays={1} />);
+    fireEvent.click(screen.getByRole("button", { name: "🔍 Quét tin" }));
+    expect(await screen.findByText("Thông báo hết phòng · bỏ qua")).toBeInTheDocument();
   });
 
   it("cập nhật trạng thái ngay sau khi gửi", async () => {

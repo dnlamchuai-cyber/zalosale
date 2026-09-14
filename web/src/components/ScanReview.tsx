@@ -3,7 +3,8 @@
 // Link: PLAN.md — yêu cầu UI ngày 2026-08-30
 
 import { useEffect, useState } from "react";
-import type { Area, ScanPost, ScanProgress } from "../types";
+import type { Area, HistoryCoverage, ScanPost, ScanProgress } from "../types";
+import { ScanHistoryCoverage } from "./ScanHistoryCoverage";
 import { api } from "../api";
 import { roomTextItems, ScanClusterDialog } from "./ScanClusterDialog";
 import { ScanFilters } from "./ScanFilters";
@@ -28,8 +29,13 @@ const STATUS_LABELS = {
   sent: "Đã gửi",
   duplicate: "Trùng",
   error: "Lỗi",
-  undetermined: "Chưa xác định",
-  no_images: "Không ảnh/video · bỏ qua",
+  building_full: "Thông báo hết phòng · bỏ qua",
+  undetermined: "Thiếu địa danh · cần kiểm tra",
+  missing_location: "Thiếu địa danh · cần kiểm tra",
+  text_only: "Chỉ có chữ · bỏ qua",
+  media_only: "Chỉ có ảnh/video · bỏ qua",
+  missing_opening: "Thiếu tin mở cụm · bỏ qua",
+  no_images: "Chỉ có chữ · bỏ qua",
 } as const;
 
 const STATUS_COLORS = {
@@ -37,9 +43,20 @@ const STATUS_COLORS = {
   sent: { background: "#dcfce7", color: "#166534" },
   duplicate: { background: "#fef3c7", color: "#92400e" },
   error: { background: "#fee2e2", color: "#b91c1c" },
+  building_full: { background: "#fee2e2", color: "#b91c1c" },
   undetermined: { background: "#e0e7ff", color: "#3730a3" },
+  missing_location: { background: "#e0e7ff", color: "#3730a3" },
+  text_only: { background: "#f3f4f6", color: "#6b7280" },
+  media_only: { background: "#f3f4f6", color: "#6b7280" },
+  missing_opening: { background: "#fef3c7", color: "#92400e" },
   no_images: { background: "#f3f4f6", color: "#6b7280" },
 } as const;
+
+const NON_SENDABLE_STATUSES = new Set(["building_full", "undetermined", "missing_location", "text_only", "media_only", "missing_opening", "no_images", "duplicate"]);
+
+function isAutomaticallySendableStatus(status: ScanPost["status"]) {
+  return status !== "sent" && !NON_SENDABLE_STATUSES.has(status ?? "pending");
+}
 
 const ROUTE_REASON_LABELS: Record<string, string> = {
   "dia-chi": "địa chỉ",
@@ -73,6 +90,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
   const [msg, setMsg] = useState<{ t: string; k: "ok" | "err" } | null>(null);
   const [range, setRange] = useState("");
   const [progress, setProgress] = useState<ScanProgress | null>(null);
+  const [historyCoverage, setHistoryCoverage] = useState<HistoryCoverage[]>([]);
   const [preview, setPreview] = useState<{ photos: string[]; index: number } | null>(null);
   const [clusterPreview, setClusterPreview] = useState<ScanPost | null>(null);
   const [showTable, setShowTable] = useState(true);
@@ -90,11 +108,12 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
 
   useEffect(() => {
     api.control({ action: "scanState" }).then((response) => {
-      const scan = (response as { scan?: { scanId: string; range: string; posts: ScanPost[]; progress?: ScanProgress | null } | null }).scan;
+      const scan = (response as { scan?: { scanId: string; range: string; posts: ScanPost[]; progress?: ScanProgress | null; historyCoverage?: HistoryCoverage[] } | null }).scan;
       if (!scan) return;
       setScanId(scan.scanId);
       setPosts(scan.posts);
       setRange(scan.range);
+      setHistoryCoverage(scan.historyCoverage || []);
       setProgress(scan.progress || null);
     }).catch(() => {});
   }, []);
@@ -148,12 +167,14 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
         total: number;
         added: number;
         posts: ScanPost[];
+        historyCoverage?: HistoryCoverage[];
       };
       setScanId(r.scanId);
       setPosts(r.posts);
       setSelected(new Set());
       setPage(0);
       setRange(r.range);
+      setHistoryCoverage(r.historyCoverage || []);
       setProgress(null);
       setMsg({ t: `Quét xong: ${r.total} bài (${r.range}) — bảng mới thay bảng cũ`, k: "ok" });
     } catch (e) {
@@ -183,7 +204,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
   };
 
   const sendAll = async () => {
-    if (!scanId || !posts.some((post) => post.status !== "sent" && post.status !== "no_images")) return;
+    if (!scanId || !posts.some((post) => isAutomaticallySendableStatus(post.status))) return;
     setBusy(true);
     setSending(true);
     try {
@@ -221,6 +242,10 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
   const sendPostToDestination = async (postIndex: number, destinationKeyword: string) => {
     if (!scanId || busy) return;
     const post = posts[postIndex];
+    if (post && !isAutomaticallySendableStatus(post.status) && post.status !== "sent") {
+      setMsg({ t: `Không gửi: ${STATUS_LABELS[post.status ?? "pending"]}`, k: "err" });
+      return;
+    }
     setBusy(true);
     setSending(true);
     try {
@@ -328,7 +353,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
 
   const totalPages = Math.max(1, Math.ceil(filteredEntries.length / SCAN_PAGE_SIZE));
   const currentPage = Math.min(page, totalPages - 1);
-  const unsentCount = posts.filter((post) => post.status !== "sent" && post.status !== "no_images").length;
+  const unsentCount = posts.filter((post) => isAutomaticallySendableStatus(post.status)).length;
   const pageEntries = filteredEntries.slice(currentPage * SCAN_PAGE_SIZE, (currentPage + 1) * SCAN_PAGE_SIZE);
   const allChecked = pageEntries.length > 0 && pageEntries.every(({ index }) => selected.has(index));
 
@@ -376,6 +401,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
         </button>
       </div>
       {msg && <div className={`note ${msg.k}`}>{msg.t}</div>}
+      <ScanHistoryCoverage entries={historyCoverage} />
       {sending && !progress?.running && (
         <div className="note ok" role="status">
           <strong>Đang gửi — chờ cụm đầu tiên...</strong>
@@ -421,7 +447,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
             {areas.map((area) => area).filter((area) => Boolean(area.keywords?.[0])).map((area) => {
               const keyword = area.keywords?.[0] as string;
               const label = (area.keywords || []).join(", ");
-              const count = posts.filter((post) => post.destinationNames.includes(keyword)).length;
+              const count = posts.filter((post) => post.destinationNames.includes(keyword) && isAutomaticallySendableStatus(post.status)).length;
               return <button key={keyword} className="mini" disabled={busy || count === 0} onClick={() => sendDestination(keyword)}>📤 Gửi nhóm {label} ({count})</button>;
             })}
           </div>
@@ -485,7 +511,7 @@ export function ScanReviewPanel({ defaultDays, areas = [], sourceGroups = [] }: 
                         {p.destinationNames.map((destination, destinationIndex) => (
                           <div className="scan-destination-item" key={`${destination}-${destinationIndex}`}>
                             <span className="badge dest">{destination}</span>
-                            <button className="mini scan-send-now" type="button" aria-label={`Gửi ngay ${destination}`} disabled={busy} onClick={() => sendPostToDestination(i, destination)}>
+                            <button className="mini scan-send-now" type="button" aria-label={`Gửi ngay ${destination}`} disabled={busy || !isAutomaticallySendableStatus(p.status)} onClick={() => sendPostToDestination(i, destination)}>
                               Gửi ngay
                             </button>
                           </div>

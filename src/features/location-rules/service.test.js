@@ -71,6 +71,33 @@ test("địa chỉ nằm giữa dòng rao: Cho thuê nhà ngõ 172 Xuân Đỉnh
   assert.equal(r.reason, "dia-chi");
 });
 
+test("dòng rao có số nhà nhận diện được địa danh đã có rule", () => {
+  const text = "Cho thuê phòng đơn 281 Bùi Xương Trạch";
+  const rulesPlusBuiXuongTrach = [...rules, {
+    id: "r10", name: "Bùi Xương Trạch", normalizedName: "bui xuong trach", type: "duong",
+    routingKeys: [keys["thanh-xuan"]], enabled: true, source: "manual", note: "", updatedAt: 1,
+  }];
+  assert.ok(extractAddressText(text).includes("Bùi Xương Trạch"));
+  assert.deepEqual(
+    classifyAreasDetailed(text, areas, null, rulesPlusBuiXuongTrach).destinations.map((area) => area.routingKey),
+    [keys["thanh-xuan"]],
+  );
+});
+
+test("dòng bắt đầu bằng số nhà cũng được coi là địa chỉ", () => {
+  const text = "84 Trần Quang Diệu\nFull nội thất";
+  const areasPlusDongDa = [...areas, { id: "f", keywords: ["dong da"], routingKey: "dong-da" }];
+  const rulesPlusTranQuangDieu = [...rules, {
+    id: "r11", name: "Trần Quang Diệu", normalizedName: "tran quang dieu", type: "duong",
+    routingKeys: ["dong-da"], enabled: true, source: "manual", note: "", updatedAt: 1,
+  }];
+  assert.ok(extractAddressText(text).includes("Trần Quang Diệu"));
+  assert.deepEqual(
+    classifyAreasDetailed(text, areasPlusDongDa, null, rulesPlusTranQuangDieu).destinations.map((area) => area.routingKey),
+    ["dong-da"],
+  );
+});
+
 test("định tuyến ví dụ user: Giáp Nhất/Khương Đình → Thanh Xuân, Đình Thôn → Nam Từ Liêm", () => {
   const r1 = classifyAreasDetailed("📍 Địa chỉ: Hẻm 4, ngách 29, ngõ 213 Giáp Nhất", areas, null, rules);
   assert.deepEqual(r1.destinations.map((d) => d.routingKey), [keys["thanh-xuan"]]);

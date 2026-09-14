@@ -1,5 +1,14 @@
 // AI: Codex | WHY: Type the explicit catch-all option across the configuration UI.
 // SPEC: docs/03_SPEC/SPEC-003.md
+export interface HistoryCoverage {
+  threadId: string;
+  sourceName: string;
+  complete: boolean;
+  reason: string;
+  received: number;
+  oldestTs: number | null;
+}
+
 export interface ForwardConfig {
   windowMs: number;
   maxBatchItems: number;
@@ -121,7 +130,7 @@ export interface ScanPost {
   price: number | null;
   commissionPercent: number | null;
   inPriceRange: boolean;
-  status?: "pending" | "sent" | "duplicate" | "error" | "undetermined" | "no_images";
+  status?: "pending" | "sent" | "duplicate" | "error" | "undetermined" | "no_images" | "text_only" | "media_only" | "missing_opening" | "missing_location" | "building_full";
   duplicateOf?: string;
   videoStatus?: "pending" | "sent" | "failed" | null;
   sentImages?: number;

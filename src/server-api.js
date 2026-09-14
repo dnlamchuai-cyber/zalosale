@@ -175,7 +175,7 @@ export class ApiServer {
             if (range.error) return res.status(400).json({ ok: false, error: range.error });
             const r = await bot.scanRange(name || "", range, keyword?.trim() || "");
             if (r.error) return res.status(400).json({ ok: false, error: r.error });
-            return res.json({ ok: true, scanId: r.scanId, range: r.range, groups: r.groups, total: r.total, added: r.added, posts: r.posts, fullBuildings: r.fullBuildings || [] });
+            return res.json({ ok: true, scanId: r.scanId, range: r.range, groups: r.groups, total: r.total, added: r.added, posts: r.posts, fullBuildings: r.fullBuildings || [], historyCoverage: r.historyCoverage || [] });
           }
           case "scanState": {
             const scan = bot?.scanState?.();

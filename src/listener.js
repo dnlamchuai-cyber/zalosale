@@ -1,3 +1,5 @@
+// AI: Codex | WHY: phản hồi rõ độ đầy đủ lịch sử và giữ thứ tự cụm khi gửi thủ công.
+// SPEC: docs/03_SPEC/SPEC-007_HistoryAndOrderedDelivery.md (PROMPT-007)
 import { ThreadType } from "zca-js";
 import fs from "node:fs";
 import path from "node:path";
@@ -10,6 +12,7 @@ import { readPersistedScanSync, writePersistedScanSync } from "./scan-state.js";
 import { messageIdsOf } from "./forwarder.js";
 import { extractStickerId } from "./closing-sticker.js";
 import { parseFullBuildingNotice } from "./full-building.js";
+import { classifyScanPost, isAutomaticallySendableScanStatus } from "./scan-post-status.js";
 
 const norm = (s) => normalizeText(s);
 /** Khoá so khớp tên nhóm: bỏ emoji/icon/dấu câu, chỉ giữ chữ + số + khoảng trắng */
@@ -534,6 +537,7 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
     const posts = [];
     const raw = new Map();
     const fullBuildings = [];
+    const historyCoverage = [];
     const postsByThreadId = new Map();
     let added = 0;
     let groups = 0;
@@ -558,6 +562,10 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
       },
     );
     for (const { id, name, sourcePosts, batches } of scanResults) {
+      historyCoverage.push({
+        threadId: id, sourceName: name,
+        ...(batches?.historyCoverage ?? { complete: false, reason: "request_error", received: 0, oldestTs: null }),
+      });
       if (!batches) continue;
       groups++;
       for (const notice of batches.fullBuildingNotices || []) {
@@ -588,7 +596,6 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
         const t = Number(items[0]?.data?.ts || items[0]?.ts || 0);
         if (isRepeatedPhotoOnlyCluster(sourcePosts, id, d.clean, d.photoUrls, t)) continue;
         const hasVideo = items.some((item) => videoUrls(item).length > 0);
-        const hasVisualMedia = d.photoCount > 0 || hasVideo;
         const postId = `${scanId}:${id}:${idx++}`;
         const post = {
           id: postId,
@@ -610,7 +617,7 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
           price: d.price,
           commissionPercent: parseCommissionPercent(sourceText),
           inPriceRange: d.inPriceRange,
-          status: d.undetermined ? "undetermined" : config.forward.skipTextOnly !== false && !hasVisualMedia ? "no_images" : "pending",
+          status: classifyScanPost({ items, batchMeta, undetermined: d.undetermined }),
           ts: t,
           clusterItems: items.map((item) => ({
             text: typeof item.data?.content === "string" ? item.data.content.slice(0, 1000) : "",
@@ -638,11 +645,11 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
       }
     }
     pruneScans();
-    const scan = { scanId, scanQueryKey, range, groups, posts, raw, fullBuildings };
+    const scan = { scanId, scanQueryKey, range, groups, posts, raw, fullBuildings, historyCoverage };
     scans.set(scanId, scan);
     latestScanId = scanId;
     persistScan(scan);
-    return { scanId, range: range.label, groups, total: posts.length, added, posts };
+    return { scanId, range: range.label, groups, total: posts.length, added, posts, historyCoverage };
   }
 
   function scanState() {
@@ -655,6 +662,7 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
       total: scan.posts.length,
       posts: scan.posts,
       fullBuildings: scan.fullBuildings || [],
+      historyCoverage: scan.historyCoverage || [],
       progress: manualProgress,
     };
   }
@@ -678,11 +686,13 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
       .map((index) => ({ post: scan.posts[index], raw: scan.raw.get(scan.posts[index]?.id) }))
       .filter(({ post, raw }) => {
         if (!post || !raw) return false;
-        const hasVisualMedia = post.photos > 0 || post.videoStatus === "pending" || post.videoStatus === "sent";
-        const hasText = raw.items.some((item) => typeof item?.data?.content === "string" && item.data.content.trim());
-        const isStandalonePhoto = post.photos > 0 && !post.videoStatus && !hasText;
-        if (config.forward.skipTextOnly !== false && !videoOnly && (!hasVisualMedia || isStandalonePhoto)) {
-          post.status = "no_images";
+        const scanStatus = classifyScanPost({
+          items: raw.items,
+          batchMeta: raw.batchMeta,
+          undetermined: post.undetermined,
+        });
+        if (config.forward.skipTextOnly !== false && !videoOnly && !target && !forceResend && !isAutomaticallySendableScanStatus(scanStatus)) {
+          post.status = scanStatus;
           return false;
         }
         return true;
@@ -775,7 +785,9 @@ export function startBot({ api, config, batcher, forwarder, status, groupsCacheP
     // Bỏ qua tin đã gửi (muốn gửi lại thì bấm Gửi lại từng tin).
     const indexes = scan.posts
       .map((post, i) => ({ post, i }))
-      .filter(({ post }) => post.status !== "sent" && post.status !== "no_images")
+      .filter(({ post }) => config.forward.skipTextOnly === false
+        ? post.status !== "sent" && post.status !== "no_images"
+        : isAutomaticallySendableScanStatus(post.status))
       .map(({ i }) => i);
     return forwardSelected(scanId, indexes);
   }

@@ -1,8 +1,15 @@
+// AI: Codex | WHY: lấy lịch sử theo ngày, trả độ đầy đủ cùng kết quả gom cụm.
+// SPEC: docs/03_SPEC/SPEC-007_HistoryAndOrderedDelivery.md (PROMPT-007)
 import { logger } from "./logger.js";
+import { collectGroupHistory, attachHistoryCoverage, localHistoryCoverage, MAX_HISTORY_MESSAGES } from "./history-range.js";
 import { Batcher, isMediaItem, isRoomLabel } from "./batcher.js";
 import { buildingNoticeMatchesText } from "./full-building.js";
 import { isStickerMessage } from "./closing-sticker.js";
 import { loadRulesCached } from "./features/location-rules/repository.js";
+
+// WHY: Zalo đôi lúc trả mô tả tòa và album/list phòng thành hai run lịch sử
+// cách nhau hơn maxWaitMs, dù cùng một bài; chỉ nối tiếp trong cửa sổ ngắn.
+const HISTORY_FOLLOW_UP_MAX_GAP_MS = 10 * 60 * 1000;
 
 function tsOf(msg) {
   const d = msg?.data ?? msg ?? {};
@@ -83,8 +90,8 @@ export function fmtDate(ms) {
 /**
  * Lấy lịch sử trong khoảng {fromMs → toMs} của nhóm + gom thành các bài đăng
  * (text + cụm ảnh nằm trong khoảng gapMs coi là 1 bài).
- * Lưu ý: zca-js 2.1.2 giới hạn API là tin mới nhất (count tin) — không phân trang theo ngày,
- * nên khoảng quá dài có thể thiếu tin cũ (cảnh báo trong log).
+ * Mở rộng số tin nhóm thường, phân trang Community đến mốc ngày;
+ * historyCoverage cho biết nguồn đã trả đủ hay dừng do giới hạn/lỗi.
  */
 export async function fetchRecentMessages(
   api,
@@ -97,7 +104,7 @@ export async function fetchRecentMessages(
     maxWaitMs = 120000,
     areas = [],
     defaultArea = null,
-    count = 1500,
+    count = MAX_HISTORY_MESSAGES,
     communityFetch,
     storeQuery,
     rules = [],
@@ -108,7 +115,7 @@ export async function fetchRecentMessages(
   // Thử group/history trước, nếu 404 thì thử community (CM)
   let res;
   try {
-    res = await api.getGroupChatHistory(threadId, count);
+    res = await collectGroupHistory((requested) => api.getGroupChatHistory(threadId, requested), { fromMs, maxMessages: count });
   } catch (e) {
     const msg = String(e?.message || "") + " " + String(e?.code || "");
     const isNotFound = msg.includes("404");
@@ -122,7 +129,7 @@ export async function fetchRecentMessages(
           if (!ctx) throw new Error("No ctx for community history");
           getCommunityHistory = getCommunityHistoryFactory(ctx, api);
         }
-        res = await getCommunityHistory(threadId, count);
+        res = await getCommunityHistory(threadId, count, { fromMs });
         logger.info(`Community history OK cho ${threadId}`);
       } catch (e2) {
         logger.warn(`Community history cũng lỗi (${e2.message}) — thử đọc từ store local`);
@@ -132,7 +139,7 @@ export async function fetchRecentMessages(
           const batches = query({ fromMs, toMs, sourceIds: [String(threadId)] });
           if (batches.length) {
             logger.info(`Đọc từ store: ${batches.length} bài trong khoảng (fallback)`);
-            return batches;
+            return localHistoryCoverage(batches);
           }
           logger.warn("Store fallback không có dữ liệu — giữ lỗi Community gốc");
         } catch (e3) {
@@ -150,7 +157,7 @@ export async function fetchRecentMessages(
           const batches = query({ fromMs, toMs, sourceIds: [String(threadId)] });
           if (batches.length) {
             logger.info(`Đọc từ store: ${batches.length} bài trong khoảng (fallback)`);
-            return batches;
+            return localHistoryCoverage(batches);
           }
           logger.warn("Store fallback không có dữ liệu — giữ lỗi adapter gốc");
         } catch (e2) {
@@ -166,16 +173,18 @@ export async function fetchRecentMessages(
     const t = tsOf(m);
     return t && t >= fromMs && t <= toMs;
   });
-  const reachedEnd = res?.hasMore === false || items.length < count;
+  const coverage = res?.historyCoverage ?? {
+    complete: false, reason: "unknown", received: items.length, oldestTs: null,
+  };
   logger.info(
     `Quét lịch sử: nhận ${items.length} tin, trong khoảng ${inRange.length} tin` +
-      (reachedEnd ? "" : ` (⚠️ hết giới hạn ${count} tin, có thể thiếu tin cũ)`)
+      (coverage.complete ? "" : ` (⚠️ chưa xác minh đủ khoảng ngày: ${coverage.reason})`)
   );
   const chronological = inRange
     .map((message, sourceIndex) => ({ message, sourceIndex }))
     .sort((left, right) => tsOf(left.message) - tsOf(right.message) || left.sourceIndex - right.sourceIndex)
     .map(({ message }) => message);
-  return segmentMessages(chronological, {
+  const batches = segmentMessages(chronological, {
     threadId,
     gapMs,
     maxBatchItems,
@@ -184,6 +193,7 @@ export async function fetchRecentMessages(
     defaultArea,
     rules,
   });
+  return attachHistoryCoverage(batches, coverage);
 }
 
 /** Quét + gom bài đăng theo cấu hình forward của bot (dùng chung cho preview và forward) */
@@ -291,18 +301,18 @@ export function attachOrphanPhotoBatches(batches, runBounds) {
       consumed.add(pi);
     }
   });
-  // (b) ảnh lẻ cuối run: gộp vào cụm có chữ gần nhất phía trước trong run.
+  // (b) ảnh lẻ sau tin mở: đưa về cụm chữ gần nhất phía trước. Một tin mở
+  // đến ở run sau không được làm album này thành cụm mồ côi; chỉ khi album
+  // nằm giữa hai cụm chữ trong cùng run mới giữ tách để tránh gửi nhầm.
   for (let i = 0; i < batches.length; i++) {
     if (consumed.has(i) || batchHasText(batches[i])) continue;
-    let hasTextAfter = false;
-    let onlyRoomLabelsAfter = true;
+    let hasOtherTextInSameRun = false;
+    const mediaRun = runOf(i);
     for (let j = i + 1; j < batches.length; j++) {
-      if (!consumed.has(j) && batchHasText(batches[j])) {
-        hasTextAfter = true;
-        if (!batchTextIsOnlyRoomLabels(batches[j])) onlyRoomLabelsAfter = false;
-      }
+      if (runOf(j) !== mediaRun) break;
+      if (!consumed.has(j) && batchHasText(batches[j]) && !batchTextIsOnlyRoomLabels(batches[j])) hasOtherTextInSameRun = true;
     }
-    if (hasTextAfter && !onlyRoomLabelsAfter) continue;
+    if (hasOtherTextInSameRun) continue;
     let host = -1;
     for (let j = i - 1; j >= 0; j--) {
       if (consumed.has(j)) continue;
@@ -347,6 +357,54 @@ export function attachOrphanRoomLabelBatches(batches) {
   return batches.filter((_, i) => !consumed.has(i));
 }
 
+function isOpeningBatch(items) {
+  return items?.batchMeta?.segmentType === "building" && batchHasText(items);
+}
+
+function isMediaFollowUp(items) {
+  const segmentType = items?.batchMeta?.segmentType;
+  if (segmentType === "building" || segmentType === "lead") return false;
+  return (items || []).some((item) => isMediaItem(item));
+}
+
+function hasRoomLabel(items) {
+  return (items || []).some((item) => {
+    const content = item?.data?.content;
+    return typeof content === "string" && isRoomLabel(content);
+  });
+}
+
+function latestBatchTimestamp(items) {
+  return Math.max(...(items || []).map(tsOf).filter(Number.isFinite), 0);
+}
+
+/**
+ * Một tin mở cụm có thể được Zalo tách khỏi list phòng/album kế tiếp chỉ vì
+ * quá khoảng flush lịch sử. Chỉ nhập khi chúng sát nhau, cùng nguồn và phần
+ * sau không tự mở cụm mới; 10 phút đủ cho ảnh/list gửi chậm nhưng không kéo
+ * qua một bài mở tòa khác.
+ */
+export function attachShortFollowUpBatches(batches) {
+  const consumed = new Set();
+  for (let host = 0; host < batches.length; host++) {
+    if (!isOpeningBatch(batches[host])) continue;
+    let previousEnd = latestBatchTimestamp(batches[host]);
+    let hasRoomEvidence = false;
+    for (let candidate = host + 1; candidate < batches.length; candidate++) {
+      if (consumed.has(candidate) || !isMediaFollowUp(batches[candidate])) break;
+      const candidateStart = Math.min(...batches[candidate].map(tsOf).filter(Number.isFinite));
+      if (!Number.isFinite(candidateStart) || candidateStart - previousEnd > HISTORY_FOLLOW_UP_MAX_GAP_MS) break;
+      // Album trần không đủ để suy đoán: batch đầu tiên phải kèm mã/list phòng.
+      if (!hasRoomEvidence && !hasRoomLabel(batches[candidate])) break;
+      batches[host].push(...batches[candidate]);
+      previousEnd = latestBatchTimestamp(batches[candidate]);
+      hasRoomEvidence = true;
+      consumed.add(candidate);
+    }
+  }
+  return batches.filter((_, index) => !consumed.has(index));
+}
+
 export function segmentMessages(
   messages,
   { threadId = "history", gapMs = 10000, maxBatchItems = 10, maxWaitMs = 120000, areas = [], defaultArea = null, rules = [] } = {}
@@ -376,7 +434,9 @@ export function segmentMessages(
   }
   batcher.flushAll();
   runBounds.push(batches.length);
-  const merged = attachOrphanRoomLabelBatches(attachOrphanPhotoBatches(batches, runBounds));
+  const merged = attachShortFollowUpBatches(
+    attachOrphanRoomLabelBatches(attachOrphanPhotoBatches(batches, runBounds))
+  );
   const activeBatches = merged.filter((items) => {
     const text = items
       .filter((item) => typeof item?.data?.content === "string")
